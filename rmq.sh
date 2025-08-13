@@ -402,12 +402,38 @@ policy() {
     # Apply quorum queue policy
     echo "Setting quorum queue policy..."
     
-    if podman exec "$container_name" rabbitmqctl set_policy \
+    # First check RabbitMQ version and cluster status
+    echo "Checking RabbitMQ version..."
+    local version_output
+    version_output=$(podman exec "$container_name" rabbitmqctl version 2>/dev/null)
+    echo "Version: $version_output"
+    
+    echo "Checking cluster status..."
+    local cluster_output
+    cluster_output=$(podman exec "$container_name" rabbitmqctl cluster_status 2>&1)
+    if echo "$cluster_output" | grep -q "Error\|failed"; then
+        echo "❌ Cluster not ready:"
+        echo "$cluster_output"
+        exit 1
+    fi
+    
+    # Try the policy command with error output
+    local policy_output
+    policy_output=$(podman exec "$container_name" rabbitmqctl set_policy \
         quorum-policy ".*" '{"x-queue-type":"quorum"}' \
-        --priority 10 --apply-to queues >/dev/null 2>&1; then
+        --priority 10 --apply-to queues 2>&1)
+    
+    if [ $? -eq 0 ]; then
         echo "✅ Quorum policy applied"
     else
-        echo "❌ Policy failed - check RabbitMQ version/cluster status"
+        echo "❌ Policy failed:"
+        echo "$policy_output"
+        echo ""
+        echo "Possible fixes:"
+        echo "1. Ensure cluster has 3+ nodes for quorum queues"
+        echo "2. Try without quorum policy first:"
+        echo "   podman exec $container_name rabbitmqctl set_policy ha-all \".*\" '{\"ha-mode\":\"all\"}'"
+        echo "3. Check if running single node (quorum needs cluster)"
         exit 1
     fi
     
