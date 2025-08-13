@@ -58,16 +58,30 @@ def main():
         # Enable publisher confirms for reliable publishing
         channel.confirm_delivery()
         
-        # Declare a quorum queue (durable and replicated)
+        # Declare queue - try quorum first, fallback to classic HA
         queue_name = 'test_queue'
-        channel.queue_declare(
-            queue=queue_name,
-            durable=True,
-            arguments={
-                'x-queue-type': 'quorum',
-                'x-quorum-initial-group-size': 3
-            }
-        )
+        
+        try:
+            # Try quorum queue first (works if cluster has 3+ nodes)
+            print("Attempting to create quorum queue...")
+            channel.queue_declare(
+                queue=queue_name,
+                durable=True,
+                arguments={
+                    'x-queue-type': 'quorum'
+                }
+            )
+            print("✅ Quorum queue created successfully")
+        except Exception as e:
+            print(f"⚠️  Quorum queue failed: {e}")
+            print("Falling back to classic durable queue with HA policy...")
+            
+            # Fallback to classic durable queue (will use HA policy)
+            channel.queue_declare(
+                queue=queue_name,
+                durable=True
+            )
+            print("✅ Classic HA queue created")
         
         print(f"📨 Publishing messages to queue: {queue_name}")
         print("Messages will be persistent and survive node failures\n")

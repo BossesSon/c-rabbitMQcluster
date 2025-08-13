@@ -1,0 +1,221 @@
+{
+  "dashboard": {
+    "id": null,
+    "title": "RabbitMQ Load Test Dashboard",
+    "description": "Monitoring dashboard for 150K msg/s load test",
+    "tags": ["rabbitmq", "load-test", "performance"],
+    "timezone": "browser",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Message Throughput (msg/s)",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "sum(rate(rabbitmq_queue_messages_published_total[30s]))",
+            "legendFormat": "Published/s",
+            "refId": "A"
+          },
+          {
+            "expr": "sum(rate(rabbitmq_queue_messages_acked_total[30s]))",
+            "legendFormat": "Consumed/s", 
+            "refId": "B"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "ops",
+            "min": 0,
+            "max": 200000,
+            "thresholds": {
+              "steps": [
+                {"color": "red", "value": 0},
+                {"color": "yellow", "value": 100000},
+                {"color": "green", "value": 140000}
+              ]
+            }
+          }
+        },
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+      },
+      {
+        "id": 2,
+        "title": "Queue Length",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "sum(rabbitmq_queue_messages_ready)",
+            "legendFormat": "Ready Messages",
+            "refId": "A"
+          },
+          {
+            "expr": "sum(rabbitmq_queue_messages_unacked)",
+            "legendFormat": "Unacked Messages",
+            "refId": "B"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "min": 0,
+            "thresholds": {
+              "steps": [
+                {"color": "green", "value": 0},
+                {"color": "yellow", "value": 100000},
+                {"color": "red", "value": 500000}
+              ]
+            }
+          }
+        },
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+      },
+      {
+        "id": 3,
+        "title": "Memory Usage",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "rabbitmq_process_resident_memory_bytes / 1024 / 1024",
+            "legendFormat": "RMQ Memory (MB) - {{instance}}",
+            "refId": "A"
+          },
+          {
+            "expr": "(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / 1024 / 1024",
+            "legendFormat": "System Memory (MB) - {{instance}}",
+            "refId": "B"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "decbytes",
+            "min": 0,
+            "max": 16000000000
+          }
+        },
+        "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8}
+      },
+      {
+        "id": 4,
+        "title": "CPU Usage",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "100 - (avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)",
+            "legendFormat": "CPU Usage % - {{instance}}",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0,
+            "max": 100
+          }
+        },
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16}
+      },
+      {
+        "id": 5,
+        "title": "Disk I/O",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "rate(node_disk_reads_completed_total[5m])",
+            "legendFormat": "Disk Reads/s - {{instance}} {{device}}",
+            "refId": "A"
+          },
+          {
+            "expr": "rate(node_disk_writes_completed_total[5m])",
+            "legendFormat": "Disk Writes/s - {{instance}} {{device}}",
+            "refId": "B"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "ops",
+            "min": 0
+          }
+        },
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16}
+      },
+      {
+        "id": 6,
+        "title": "Network I/O",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "rate(node_network_receive_bytes_total[5m]) * 8",
+            "legendFormat": "Inbound bps - {{instance}} {{device}}",
+            "refId": "A"
+          },
+          {
+            "expr": "rate(node_network_transmit_bytes_total[5m]) * 8",
+            "legendFormat": "Outbound bps - {{instance}} {{device}}",
+            "refId": "B"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "bps",
+            "min": 0
+          }
+        },
+        "gridPos": {"h": 8, "w": 24, "x": 0, "y": 24}
+      },
+      {
+        "id": 7,
+        "title": "Connection Count",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "rabbitmq_connections",
+            "legendFormat": "Connections - {{instance}}",
+            "refId": "A"
+          },
+          {
+            "expr": "rabbitmq_channels",
+            "legendFormat": "Channels - {{instance}}",
+            "refId": "B"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "min": 0
+          }
+        },
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 32}
+      },
+      {
+        "id": 8,
+        "title": "Error Rates",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "rate(rabbitmq_queue_messages_returned_total[5m])",
+            "legendFormat": "Returned Messages/s",
+            "refId": "A"
+          },
+          {
+            "expr": "rate(rabbitmq_queue_messages_redelivered_total[5m])",
+            "legendFormat": "Redelivered Messages/s",
+            "refId": "B"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "ops",
+            "min": 0
+          }
+        },
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 32}
+      }
+    ],
+    "time": {
+      "from": "now-5m",
+      "to": "now"
+    },
+    "refresh": "1s",
+    "version": 1
+  }
+}

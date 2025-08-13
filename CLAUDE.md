@@ -61,7 +61,43 @@ Copy `.env.example` to `.env` and configure:
 
 ## Expected Infrastructure
 
-- 4 Rocky Linux 8 servers with SSH access
+- 4 Rocky Linux 8 servers with SSH access (15GB RAM, 80GB storage each)
 - Servers 1-3: RabbitMQ cluster nodes
 - Server 4: Test application host
 - Network connectivity between all servers
+
+## Load Testing
+
+### High-Performance Load Test
+The system includes a comprehensive load test setup capable of:
+- **150,000 messages/second** at 100KB each
+- **100-second duration** (~1.43TB total data)
+- Full monitoring with Prometheus and Grafana
+
+### Load Test Commands
+```bash
+./load_test.sh full          # Complete load test with monitoring
+./load_test.sh test-only     # Load test without monitoring setup
+./load_test.sh monitor       # Setup monitoring stack only
+./load_test.sh cleanup       # Remove monitoring containers
+```
+
+### Load Test Components
+- **High-performance producer**: `test/load_test_producer.py` (multi-process, multi-connection)
+- **High-performance consumer**: `test/load_test_consumer.py` (batch processing, auto-reconnect)
+- **Monitoring stack**: Prometheus + Grafana + exporters (`monitoring/`)
+- **Optimized RabbitMQ config**: Enhanced `rabbitmq.conf` for extreme throughput
+
+### Key Optimizations Applied
+- Multiple AMQP listeners (ports 5672-5675) for load balancing
+- Aggressive memory management (70% of 15GB RAM)
+- TCP buffer optimizations for high throughput
+- Quorum queues with performance tuning
+- Statistics collection disabled during load test
+
+### Monitoring Access
+- **Grafana**: http://localhost:3000 (admin/admin123)
+- **Prometheus**: http://localhost:9090
+- **Load Test Dashboard**: Pre-configured for real-time monitoring
+
+See `LOAD_TEST.md` for complete load testing documentation.

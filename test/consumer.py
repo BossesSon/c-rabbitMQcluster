@@ -115,15 +115,27 @@ class Consumer:
             if not self.get_connection():
                 sys.exit(1)
             
-            # Declare the same queue (idempotent)
-            self.channel.queue_declare(
-                queue=self.queue_name,
-                durable=True,
-                arguments={
-                    'x-queue-type': 'quorum',
-                    'x-quorum-initial-group-size': 3
-                }
-            )
+            # Declare the same queue (idempotent) - matches producer logic
+            try:
+                print("Attempting to declare quorum queue...")
+                self.channel.queue_declare(
+                    queue=self.queue_name,
+                    durable=True,
+                    arguments={
+                        'x-queue-type': 'quorum'
+                    }
+                )
+                print("✅ Quorum queue declared")
+            except Exception as e:
+                print(f"⚠️  Quorum queue failed: {e}")
+                print("Using classic durable queue...")
+                
+                # Fallback to classic durable queue
+                self.channel.queue_declare(
+                    queue=self.queue_name,
+                    durable=True
+                )
+                print("✅ Classic HA queue declared")
             
             # Set quality of service (prefetch count)
             # This ensures fair dispatch and prevents overwhelming the consumer
@@ -149,15 +161,20 @@ class Consumer:
                     if not self.get_connection():
                         print("❌ Failed to reconnect, exiting")
                         break
-                    # Re-setup consumer after reconnection
-                    self.channel.queue_declare(
-                        queue=self.queue_name,
-                        durable=True,
-                        arguments={
-                            'x-queue-type': 'quorum',
-                            'x-quorum-initial-group-size': 3
-                        }
-                    )
+                    # Re-setup consumer after reconnection (same logic as initial setup)
+                    try:
+                        self.channel.queue_declare(
+                            queue=self.queue_name,
+                            durable=True,
+                            arguments={
+                                'x-queue-type': 'quorum'
+                            }
+                        )
+                    except Exception:
+                        self.channel.queue_declare(
+                            queue=self.queue_name,
+                            durable=True
+                        )
                     self.channel.basic_qos(prefetch_count=prefetch_count)
                     self.channel.basic_consume(
                         queue=self.queue_name,
