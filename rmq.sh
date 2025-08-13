@@ -6,32 +6,82 @@ set -e
 # Commands: prep, up, join, policy, status, down, wipe
 
 # Load environment variables
+echo "🔍 DEBUG: Looking for .env file in current directory: $(pwd)"
 if [ -f ".env" ]; then
+    echo "✅ ENV FILE FOUND: Loading configuration from .env"
     source .env
+    echo "🔍 DEBUG: Environment variables loaded successfully"
 else
-    echo "Error: .env file not found. Copy .env.example to .env and configure."
+    echo "❌ ENV FILE MISSING: .env file not found in $(pwd)"
+    echo "🔧 SOLUTION: Copy .env.example to .env and configure:"
+    echo "  cp .env.example .env"
+    echo "  nano .env  # Edit the configuration"
+    echo "📄 REQUIRED: Update IP addresses, passwords, and Erlang cookie"
+    if [ -f ".env.example" ]; then
+        echo "✅ Found .env.example file - you can copy and modify it"
+    else
+        echo "❌ .env.example is also missing - this may indicate a damaged installation"
+    fi
     exit 1
 fi
 
 # Validate required environment variables
 check_env() {
+    echo "🔍 DEBUG: Validating environment configuration..."
     local vars=("RABBITMQ_IMAGE" "RABBITMQ_ADMIN_USER" "RABBITMQ_ADMIN_PASSWORD" "ERLANG_COOKIE" "RMQ1_HOST" "RMQ2_HOST" "RMQ3_HOST")
+    local missing_vars=()
+    
     for var in "${vars[@]}"; do
         if [ -z "${!var}" ]; then
-            echo "Error: $var is not set in .env file"
-            exit 1
+            echo "❌ MISSING: $var is not set in .env file"
+            missing_vars+=("$var")
+        else
+            # Show partial values for sensitive variables
+            case "$var" in
+                *PASSWORD*|*COOKIE*)
+                    echo "✅ $var: ${!var:0:3}..."
+                    ;;
+                *)
+                    echo "✅ $var: ${!var}"
+                    ;;
+            esac
         fi
     done
+    
+    if [ ${#missing_vars[@]} -gt 0 ]; then
+        echo "❌ ENV CHECK FAILED: Missing required variables"
+        echo "🔧 SOLUTION: Add these to your .env file:"
+        for var in "${missing_vars[@]}"; do
+            echo "  $var=<your_value>"
+        done
+        echo "📄 HINT: Copy .env.example to .env and customize the values"
+        exit 1
+    fi
+    
+    echo "✅ ENV CHECK OK: All required variables are set"
 }
 
 # Get node hostname based on current server
 get_node_name() {
-    local current_host=$(hostname -I | awk '{print $1}')
+    local current_host=$(hostname -I | awk '{print $1}' || echo "unknown")
+    echo "🔍 DEBUG: Current server IP detected as: $current_host"
+    echo "🔍 DEBUG: Configured IPs - RMQ1: $RMQ1_HOST, RMQ2: $RMQ2_HOST, RMQ3: $RMQ3_HOST"
+    
     case "$current_host" in
-        "$RMQ1_HOST") echo "rabbit@rmq1" ;;
-        "$RMQ2_HOST") echo "rabbit@rmq2" ;;
-        "$RMQ3_HOST") echo "rabbit@rmq3" ;;
-        *) echo "rabbit@$(hostname -s)" ;;
+        "$RMQ1_HOST") 
+            echo "🔍 DEBUG: Identified as RMQ1 server"
+            echo "rabbit@rmq1" ;;
+        "$RMQ2_HOST") 
+            echo "🔍 DEBUG: Identified as RMQ2 server"
+            echo "rabbit@rmq2" ;;
+        "$RMQ3_HOST") 
+            echo "🔍 DEBUG: Identified as RMQ3 server"
+            echo "rabbit@rmq3" ;;
+        *) 
+            local fallback="rabbit@$(hostname -s)"
+            echo "⚠️  WARNING: Current IP $current_host doesn't match any configured RMQ host"
+            echo "🔍 DEBUG: Using fallback nodename: $fallback"
+            echo "$fallback" ;;
     esac
 }
 
@@ -40,24 +90,34 @@ check_connectivity() {
     local target_host="$1"
     local target_name="$2"
     
-    echo "Checking connectivity to $target_name ($target_host)..."
+    echo "🔍 DEBUG: Starting connectivity check to $target_name at $target_host"
     
     # Check if host is reachable
+    echo "🔍 DEBUG: Testing ping to $target_host..."
     if ! ping -c 1 -W 2 "$target_host" >/dev/null 2>&1; then
-        echo "❌ Cannot reach $target_name at $target_host"
+        echo "❌ PING FAILED: Cannot reach $target_name at $target_host"
+        echo "🔍 DEBUG: Ping command: ping -c 1 -W 2 $target_host"
         return 1
     fi
+    echo "✅ PING OK: Host $target_host is reachable"
     
     # Check required ports
     local ports=(5672 4369 25672 15672)
-    for port in "${ports[@]}"; do
-        if ! timeout 3 bash -c "echo >/dev/tcp/$target_host/$port" 2>/dev/null; then
-            echo "❌ Port $port is not accessible on $target_name"
+    local port_names=("AMQP" "EPMD" "Inter-node" "Management")
+    for i in "${!ports[@]}"; do
+        local port="${ports[$i]}"
+        local port_name="${port_names[$i]}"
+        echo "🔍 DEBUG: Testing port $port ($port_name) on $target_host..."
+        if timeout 3 bash -c "echo >/dev/tcp/$target_host/$port" 2>/dev/null; then
+            echo "✅ PORT $port OK: $port_name service accessible"
+        else
+            echo "❌ PORT $port FAILED: $port_name service not accessible on $target_name"
+            echo "🔍 DEBUG: Port test command: timeout 3 bash -c 'echo >/dev/tcp/$target_host/$port'"
             return 1
         fi
     done
     
-    echo "✅ Connectivity to $target_name is OK"
+    echo "✅ CONNECTIVITY OK: All checks passed for $target_name"
     return 0
 }
 
@@ -68,25 +128,45 @@ wait_for_container() {
     local check_interval=2
     local elapsed=0
     
-    echo "Waiting for container $container_name to be ready..."
+    echo "🔍 DEBUG: Waiting for container $container_name to be ready (max ${max_wait}s)..."
     
     while [ $elapsed -lt $max_wait ]; do
-        if podman exec "$container_name" rabbitmqctl status >/dev/null 2>&1; then
-            echo "✅ Container $container_name is ready!"
-            return 0
-        fi
-        
-        if ! podman container exists "$container_name" || [ "$(podman inspect "$container_name" --format '{{.State.Status}}')" != "running" ]; then
-            echo "❌ Container $container_name is not running"
+        # Check if container exists first
+        if ! podman container exists "$container_name"; then
+            echo "❌ CONTAINER MISSING: Container $container_name does not exist"
             return 1
         fi
         
+        # Check container status
+        local container_status=$(podman inspect "$container_name" --format '{{.State.Status}}' 2>/dev/null || echo "unknown")
+        echo "🔍 DEBUG: Container $container_name status: $container_status"
+        
+        if [ "$container_status" != "running" ]; then
+            echo "❌ CONTAINER NOT RUNNING: Container $container_name is $container_status"
+            echo "🔍 DEBUG: Container logs (last 10 lines):"
+            podman logs "$container_name" | tail -10
+            return 1
+        fi
+        
+        # Test RabbitMQ status
+        echo "🔍 DEBUG: Testing RabbitMQ status in container..."
+        if podman exec "$container_name" rabbitmqctl status >/dev/null 2>&1; then
+            echo "✅ CONTAINER READY: RabbitMQ in $container_name is responding"
+            return 0
+        fi
+        
+        # Test if RabbitMQ process is at least running
+        local rabbit_processes=$(podman exec "$container_name" pgrep -f "rabbit" 2>/dev/null | wc -l)
+        echo "🔍 DEBUG: RabbitMQ processes in container: $rabbit_processes"
+        
         sleep $check_interval
         elapsed=$((elapsed + check_interval))
-        echo "Waiting... ($elapsed/${max_wait}s)"
+        echo "⏳ WAITING: Still initializing... ($elapsed/${max_wait}s)"
     done
     
-    echo "❌ Container $container_name failed to become ready within ${max_wait}s"
+    echo "❌ TIMEOUT: Container $container_name failed to become ready within ${max_wait}s"
+    echo "🔍 DEBUG: Final container status:"
+    podman inspect "$container_name" --format 'Status: {{.State.Status}} | Error: {{.State.Error}}' 2>/dev/null || echo "Could not inspect container"
     return 1
 }
 
@@ -94,10 +174,11 @@ wait_for_container() {
 prep() {
     echo "=== Preparing Rocky Linux 8 for RabbitMQ cluster ==="
     
-    # Install Podman
-    echo "Installing Podman..."
+    # Install Podman and required tools
+    echo "🔍 DEBUG: Installing Podman and dependencies..."
     sudo dnf update -y
-    sudo dnf install -y podman firewalld
+    sudo dnf install -y podman firewalld curl dos2unix
+    echo "✅ INSTALL OK: Podman, firewalld, curl, and dos2unix installed"
     
     # Enable and start firewalld
     sudo systemctl enable --now firewalld
@@ -147,6 +228,7 @@ up() {
     echo "=== Starting RabbitMQ node $node_name ==="
     
     # Force cleanup any existing container/processes
+    echo "🔍 DEBUG: Performing force cleanup for $node_name before starting..."
     force_cleanup "$node_name"
     
     # Create data directory after cleanup
@@ -160,7 +242,17 @@ up() {
     fi
     
     # Start RabbitMQ container
-    podman run -d \
+    echo "🔍 DEBUG: Starting RabbitMQ container with the following settings:"
+    echo "  - Container name: $container_name"
+    echo "  - Hostname: $node_name"
+    echo "  - Node host IP: $node_host"
+    echo "  - Data directory: $data_dir"
+    echo "  - Image: $RABBITMQ_IMAGE"
+    echo "  - Admin user: $RABBITMQ_ADMIN_USER"
+    echo "  - Erlang cookie: ${ERLANG_COOKIE:0:8}..."
+    echo "  - Host mappings: rmq1->$RMQ1_HOST, rmq2->$RMQ2_HOST, rmq3->$RMQ3_HOST"
+    
+    if podman run -d \
         --name "$container_name" \
         --hostname "$node_name" \
         --network host \
@@ -173,7 +265,12 @@ up() {
         -e RABBITMQ_DEFAULT_PASS="$RABBITMQ_ADMIN_PASSWORD" \
         -e RABBITMQ_ERLANG_COOKIE="$ERLANG_COOKIE" \
         -e RABBITMQ_NODENAME="rabbit@$node_name" \
-        "$RABBITMQ_IMAGE"
+        "$RABBITMQ_IMAGE"; then
+        echo "✅ CONTAINER STARTED: RabbitMQ container launched successfully"
+    else
+        echo "❌ CONTAINER START FAILED: Could not start RabbitMQ container"
+        exit 1
+    fi
     
     echo "Waiting for RabbitMQ to start..."
     sleep 5
@@ -232,16 +329,28 @@ join() {
     
     echo "=== Joining $node_name to cluster via $seed_node ==="
     
-    # Verify both containers exist and are running
+    # Verify local container exists and is running
+    echo "🔍 DEBUG: Checking local container $container_name..."
     if ! podman container exists "$container_name"; then
-        echo "❌ Container $container_name does not exist. Run: $0 up $node_name"
+        echo "❌ LOCAL CONTAINER MISSING: Container $container_name does not exist"
+        echo "🔧 SOLUTION: Run '$0 up $node_name' to create the container"
         exit 1
     fi
     
-    if ! podman container exists "$seed_container"; then
-        echo "❌ Seed container $seed_container does not exist. Run: $0 up $seed_node"
+    local container_status=$(podman inspect "$container_name" --format '{{.State.Status}}' 2>/dev/null || echo "unknown")
+    echo "🔍 DEBUG: Local container status: $container_status"
+    if [ "$container_status" != "running" ]; then
+        echo "❌ LOCAL CONTAINER NOT RUNNING: Container $container_name is $container_status"
+        echo "🔧 SOLUTION: Start the container with '$0 up $node_name'"
         exit 1
     fi
+    echo "✅ LOCAL CONTAINER OK: $container_name is running"
+    
+    # For cross-server clustering, verify connectivity to the remote seed node
+    echo "🔍 DEBUG: This is a cross-server join operation"
+    echo "🔍 DEBUG: Local node: $node_name (container: $container_name)"
+    echo "🔍 DEBUG: Remote seed node: $seed_node at $seed_host"
+    echo "🔍 DEBUG: Seed nodename for clustering: $seed_nodename"
     
     # Check connectivity to seed node
     if ! check_connectivity "$seed_host" "$seed_node"; then
@@ -250,71 +359,145 @@ join() {
         exit 1
     fi
     
-    # Wait for both containers to be ready
+    # Wait for local container to be ready
     if ! wait_for_container "$container_name" 30; then
         echo "❌ Container $container_name is not ready"
         exit 1
     fi
     
-    if ! wait_for_container "$seed_container" 30; then
-        echo "❌ Seed container $seed_container is not ready"
-        exit 1
+    # For seed container on remote server, verify it's accessible
+    echo "🔍 DEBUG: Verifying remote seed node is ready..."
+    local max_wait=30
+    local wait_time=0
+    local seed_ready=false
+    
+    while [ $wait_time -lt $max_wait ]; do
+        echo "🔍 DEBUG: Testing management interface at $seed_host:15672 (attempt $((wait_time/2 + 1)))..."
+        if timeout 3 bash -c "echo >/dev/tcp/$seed_host/15672" 2>/dev/null; then
+            echo "✅ SEED ACCESSIBLE: Management interface at $seed_host:15672 is responding"
+            seed_ready=true
+            break
+        fi
+        echo "⏳ WAITING: Seed node management interface not ready... ($wait_time/${max_wait}s)"
+        sleep 2
+        wait_time=$((wait_time + 2))
+    done
+    
+    if [ "$seed_ready" = "false" ]; then
+        echo "⚠️  SEED NOT READY: Management interface not responding after ${max_wait}s"
+        echo "🔧 SOLUTION: Ensure seed node $seed_node is running on $seed_host"
+        echo "🔧 SOLUTION: Check if port 15672 is open in firewall"
+        echo "🔍 DEBUG: Proceeding with join attempt anyway..."
     fi
     
-    # Verify seed node is accessible from joining node
-    echo "Testing Erlang connectivity between nodes..."
-    if ! podman exec "$container_name" rabbitmqctl eval "net_adm:ping('$seed_nodename')." 2>/dev/null | grep -q "pong"; then
-        echo "⚠️  Erlang ping to seed node failed, but proceeding with join attempt..."
+    # Test Erlang connectivity from local container to seed node
+    echo "🔍 DEBUG: Testing Erlang connectivity to seed node..."
+    echo "🔍 DEBUG: Command: podman exec $container_name rabbitmqctl eval \"net_adm:ping('$seed_nodename').\""
+    
+    local erlang_result
+    erlang_result=$(podman exec "$container_name" rabbitmqctl eval "net_adm:ping('$seed_nodename')." 2>&1)
+    echo "🔍 DEBUG: Erlang ping result: $erlang_result"
+    
+    if echo "$erlang_result" | grep -q "pong"; then
+        echo "✅ ERLANG OK: Nodes can communicate via Erlang distribution"
     else
-        echo "✅ Erlang connectivity to seed node verified"
+        echo "⚠️  ERLANG FAILED: Cannot ping seed node via Erlang distribution"
+        echo "🔍 DEBUG: This may be normal if nodes haven't established trust yet"
+        echo "🔍 DEBUG: Possible causes:"
+        echo "  - Different Erlang cookies (check ERLANG_COOKIE in .env)"
+        echo "  - Network connectivity issues (ports 4369, 25672)"
+        echo "  - Hostname resolution issues"
+        echo "🔍 DEBUG: Proceeding with join attempt..."
     fi
     
     # Stop the app with retry
-    echo "Stopping RabbitMQ application on $node_name..."
+    echo "🔍 DEBUG: Stopping RabbitMQ application on $node_name for clustering..."
     local retries=3
     while [ $retries -gt 0 ]; do
-        if podman exec "$container_name" rabbitmqctl stop_app 2>/dev/null; then
+        echo "🔍 DEBUG: Attempt to stop_app (retries left: $retries)"
+        if podman exec "$container_name" rabbitmqctl stop_app 2>&1; then
+            echo "✅ STOP_APP OK: RabbitMQ application stopped successfully"
             break
         fi
-        echo "Retrying stop_app... ($retries attempts left)"
+        echo "⚠️  STOP_APP FAILED: Retrying... ($retries attempts left)"
         sleep 2
         ((retries--))
     done
     
+    if [ $retries -eq 0 ]; then
+        echo "❌ STOP_APP TIMEOUT: Could not stop RabbitMQ application after multiple attempts"
+        echo "🔧 SOLUTION: Check container logs: podman logs $container_name"
+    fi
+    
     # Reset the node
-    echo "Resetting node $node_name..."
-    if ! podman exec "$container_name" rabbitmqctl reset; then
-        echo "❌ Failed to reset node $node_name"
+    echo "🔍 DEBUG: Resetting node $node_name to clear any previous cluster membership..."
+    local reset_output
+    reset_output=$(podman exec "$container_name" rabbitmqctl reset 2>&1)
+    if [ $? -eq 0 ]; then
+        echo "✅ RESET OK: Node $node_name has been reset"
+        echo "🔍 DEBUG: Reset output: $reset_output"
+    else
+        echo "❌ RESET FAILED: Could not reset node $node_name"
+        echo "🔍 DEBUG: Reset error: $reset_output"
         exit 1
     fi
     
-    # Join cluster with retry
-    echo "Joining cluster..."
+    # Join cluster with retry and detailed logging
+    echo "🔍 DEBUG: Attempting to join $node_name to cluster via $seed_nodename..."
     retries=3
     while [ $retries -gt 0 ]; do
-        if podman exec "$container_name" rabbitmqctl join_cluster "$seed_nodename"; then
-            echo "✅ Successfully joined cluster"
+        echo "🔍 DEBUG: Join attempt (retries left: $retries)"
+        echo "🔍 DEBUG: Command: podman exec $container_name rabbitmqctl join_cluster $seed_nodename"
+        
+        local join_output
+        join_output=$(podman exec "$container_name" rabbitmqctl join_cluster "$seed_nodename" 2>&1)
+        local join_result=$?
+        
+        echo "🔍 DEBUG: Join output: $join_output"
+        
+        if [ $join_result -eq 0 ]; then
+            echo "✅ JOIN SUCCESS: Node $node_name has joined the cluster!"
             break
         fi
         
+        echo "❌ JOIN FAILED: Attempt failed with exit code $join_result"
+        echo "🔍 DEBUG: Error details: $join_output"
+        
         if [ $retries -eq 1 ]; then
-            echo "❌ Failed to join cluster after multiple attempts"
-            echo "Check that:"
-            echo "  - Both nodes have the same ERLANG_COOKIE"
-            echo "  - Network connectivity is working"
-            echo "  - Firewalls allow ports 4369, 5672, 25672"
+            echo "❌ JOIN TIMEOUT: Failed to join cluster after multiple attempts"
+            echo "🔧 TROUBLESHOOTING CHECKLIST:"
+            echo "  1. Verify ERLANG_COOKIE is identical on both nodes:"
+            echo "     - Current: ${ERLANG_COOKIE:0:8}..."
+            echo "  2. Check network connectivity between servers:"
+            echo "     - AMQP port 5672: timeout 3 bash -c 'echo >/dev/tcp/$seed_host/5672'"
+            echo "     - EPMD port 4369: timeout 3 bash -c 'echo >/dev/tcp/$seed_host/4369'"
+            echo "     - Inter-node port 25672: timeout 3 bash -c 'echo >/dev/tcp/$seed_host/25672'"
+            echo "  3. Verify seed node is running:"
+            echo "     - SSH to $seed_host and run: podman ps | grep rabbitmq-$seed_node"
+            echo "  4. Check firewall rules on both servers"
+            echo "  5. Verify hostname resolution in containers:"
+            echo "     - podman exec $container_name nslookup $seed_node"
+            echo "  6. Check RabbitMQ logs for more details:"
+            echo "     - podman logs $container_name"
             exit 1
         fi
         
-        echo "Join failed, retrying... ($retries attempts left)"
+        echo "⏳ RETRYING: Waiting 5 seconds before retry... ($retries attempts left)"
         sleep 5
         ((retries--))
     done
     
     # Start the app
-    echo "Starting RabbitMQ application on $node_name..."
-    if ! podman exec "$container_name" rabbitmqctl start_app; then
-        echo "❌ Failed to start RabbitMQ application"
+    echo "🔍 DEBUG: Starting RabbitMQ application on $node_name after joining cluster..."
+    local start_output
+    start_output=$(podman exec "$container_name" rabbitmqctl start_app 2>&1)
+    if [ $? -eq 0 ]; then
+        echo "✅ START_APP OK: RabbitMQ application started successfully"
+        echo "🔍 DEBUG: Start output: $start_output"
+    else
+        echo "❌ START_APP FAILED: Could not start RabbitMQ application"
+        echo "🔍 DEBUG: Start error: $start_output"
+        echo "🔧 SOLUTION: Check logs with: podman logs $container_name"
         exit 1
     fi
     
@@ -324,10 +507,25 @@ join() {
     sleep 3
     
     # Show cluster status
-    echo -e "\n=== Cluster Status ==="
-    if ! podman exec "$container_name" rabbitmqctl cluster_status; then
-        echo "⚠️  Warning: Could not retrieve cluster status"
+    echo -e "\n🔍 DEBUG: Retrieving cluster status after join..."
+    echo "=== CLUSTER STATUS ==="
+    local status_output
+    status_output=$(podman exec "$container_name" rabbitmqctl cluster_status 2>&1)
+    if [ $? -eq 0 ]; then
+        echo "$status_output"
+        echo "✅ CLUSTER STATUS: Successfully retrieved cluster information"
+    else
+        echo "⚠️  CLUSTER STATUS WARNING: Could not retrieve cluster status"
+        echo "🔍 DEBUG: Status error: $status_output"
     fi
+    
+    # Additional verification
+    echo -e "\n🔍 DEBUG: Additional cluster verification..."
+    echo "--- Node Status ---"
+    podman exec "$container_name" rabbitmqctl status | grep -A 5 -B 5 "cluster_name\|partitions" || echo "Could not get detailed node status"
+    
+    echo -e "\n--- List Nodes ---"
+    podman exec "$container_name" rabbitmqctl eval "rabbit_nodes:all_running()." 2>/dev/null || echo "Could not list running nodes"
 }
 
 # Apply quorum queue policy
@@ -417,28 +615,71 @@ force_cleanup() {
     local container_name="rabbitmq-$node_name"
     local data_dir="$HOME/.local/share/rabbitmq/$node_name"
     
-    echo "=== Force cleanup for RabbitMQ node $node_name ==="
+    echo "🧹 === FORCE CLEANUP for RabbitMQ node $node_name ==="
+    echo "🔍 DEBUG: Container name: $container_name"
+    echo "🔍 DEBUG: Data directory: $data_dir"
     
-    # Kill container if running
-    podman kill "$container_name" 2>/dev/null || true
-    
-    # Stop container if still running
-    podman stop "$container_name" 2>/dev/null || true
-    
-    # Remove container forcefully
-    podman rm -f "$container_name" 2>/dev/null || true
+    # Check if container exists
+    if podman container exists "$container_name" 2>/dev/null; then
+        local container_status=$(podman inspect "$container_name" --format '{{.State.Status}}' 2>/dev/null || echo "unknown")
+        echo "🔍 DEBUG: Container $container_name exists with status: $container_status"
+        
+        # Kill container if running
+        if [ "$container_status" = "running" ]; then
+            echo "🔍 DEBUG: Killing running container..."
+            podman kill "$container_name" 2>/dev/null && echo "✅ Container killed" || echo "⚠️  Kill failed or container already stopped"
+        fi
+        
+        # Stop container if still running
+        echo "🔍 DEBUG: Ensuring container is stopped..."
+        podman stop "$container_name" 2>/dev/null && echo "✅ Container stopped" || echo "⚠️  Stop failed or container already stopped"
+        
+        # Remove container forcefully
+        echo "🔍 DEBUG: Removing container..."
+        podman rm -f "$container_name" 2>/dev/null && echo "✅ Container removed" || echo "⚠️  Remove failed"
+    else
+        echo "🔍 DEBUG: Container $container_name does not exist (OK)"
+    fi
     
     # Clean up any leftover processes
-    pkill -f "rabbitmq.*$node_name" 2>/dev/null || true
+    echo "🔍 DEBUG: Checking for leftover RabbitMQ processes..."
+    local rabbit_pids=$(pgrep -f "rabbitmq.*$node_name" 2>/dev/null || echo "")
+    if [ -n "$rabbit_pids" ]; then
+        echo "🔍 DEBUG: Found leftover processes: $rabbit_pids"
+        pkill -f "rabbitmq.*$node_name" 2>/dev/null && echo "✅ Processes killed" || echo "⚠️  Process kill failed"
+    else
+        echo "🔍 DEBUG: No leftover processes found (OK)"
+    fi
     
     # Remove data directory forcefully
-    sudo rm -rf "$data_dir" 2>/dev/null || true
-    rm -rf "$data_dir" 2>/dev/null || true
+    if [ -d "$data_dir" ]; then
+        echo "🔍 DEBUG: Removing data directory: $data_dir"
+        local dir_size=$(du -sh "$data_dir" 2>/dev/null | cut -f1 || echo "unknown")
+        echo "🔍 DEBUG: Data directory size: $dir_size"
+        
+        # Try without sudo first
+        if rm -rf "$data_dir" 2>/dev/null; then
+            echo "✅ Data directory removed (no sudo needed)"
+        else
+            echo "🔍 DEBUG: Regular rm failed, trying with sudo..."
+            sudo rm -rf "$data_dir" 2>/dev/null && echo "✅ Data directory removed (with sudo)" || echo "⚠️  Data directory removal failed"
+        fi
+    else
+        echo "🔍 DEBUG: Data directory does not exist (OK)"
+    fi
     
     # Remove any volumes associated with the container
-    podman volume ls -q | grep -E "(rabbitmq|$node_name)" | xargs -r podman volume rm -f 2>/dev/null || true
+    echo "🔍 DEBUG: Checking for associated volumes..."
+    local volumes=$(podman volume ls -q 2>/dev/null | grep -E "(rabbitmq|$node_name)" || echo "")
+    if [ -n "$volumes" ]; then
+        echo "🔍 DEBUG: Found volumes: $volumes"
+        echo "$volumes" | xargs -r podman volume rm -f 2>/dev/null && echo "✅ Volumes removed" || echo "⚠️  Volume removal failed"
+    else
+        echo "🔍 DEBUG: No associated volumes found (OK)"
+    fi
     
-    echo "Force cleanup completed for node $node_name"
+    echo "✅ CLEANUP COMPLETE: Force cleanup finished for node $node_name"
+    echo "🔍 DEBUG: You can now safely run: $0 up $node_name"
 }
 
 # Wipe all data for a node (enhanced)
@@ -549,6 +790,7 @@ Commands:
   wipe <node>            - Completely wipe a node's data (WARNING: destructive!)
   cleanup-all            - Complete cleanup of everything (VERY destructive!)
   test-network           - Test network connectivity between all nodes
+  debug [node]           - Show detailed debug information (useful for troubleshooting)
 
 Examples:
   $0 prep                # Prepare system
@@ -561,9 +803,91 @@ Examples:
   $0 wipe rmq2          # Wipe rmq2 data
   $0 cleanup-all        # Complete cleanup (DANGEROUS!)
   $0 test-network       # Test connectivity before clustering
+  $0 debug              # Show system debug info
+  $0 debug rmq1         # Show detailed info for rmq1
 
 Note: Make sure to copy .env.example to .env and configure before use.
 EOF
+}
+
+# Debug system state and configuration
+debug() {
+    local node_name="${1:-all}"
+    
+    echo "🔍 === SYSTEM DEBUG INFORMATION ==="
+    echo "📅 Timestamp: $(date)"
+    echo "💻 Hostname: $(hostname)"
+    echo "🌐 IP Address: $(hostname -I | awk '{print $1}' || echo 'unknown')"
+    echo "📁 Working Directory: $(pwd)"
+    echo ""
+    
+    # Environment check
+    echo "--- ENVIRONMENT ---"
+    if [ -f ".env" ]; then
+        echo "✅ .env file exists"
+        check_env 2>/dev/null && echo "✅ All required variables set" || echo "❌ Environment variables missing or invalid"
+    else
+        echo "❌ .env file missing"
+    fi
+    echo ""
+    
+    # Container status
+    echo "--- CONTAINER STATUS ---"
+    local all_containers=$(podman ps -a --filter "name=rabbitmq-" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null)
+    if [ -n "$all_containers" ]; then
+        echo "$all_containers"
+    else
+        echo "No RabbitMQ containers found"
+    fi
+    echo ""
+    
+    # Network connectivity
+    if [ -f ".env" ]; then
+        source .env 2>/dev/null
+        echo "--- NETWORK CONNECTIVITY ---"
+        for host_var in RMQ1_HOST RMQ2_HOST RMQ3_HOST; do
+            local host_ip="${!host_var}"
+            if [ -n "$host_ip" ]; then
+                echo -n "Testing $host_var ($host_ip): "
+                if ping -c 1 -W 2 "$host_ip" >/dev/null 2>&1; then
+                    echo "✅ Reachable"
+                else
+                    echo "❌ Unreachable"
+                fi
+            fi
+        done
+        echo ""
+    fi
+    
+    # Specific node debug
+    if [ "$node_name" != "all" ] && [ "$node_name" != "" ]; then
+        echo "--- NODE $node_name DETAILS ---"
+        local container_name="rabbitmq-$node_name"
+        local data_dir="$HOME/.local/share/rabbitmq/$node_name"
+        
+        echo "Container name: $container_name"
+        echo "Data directory: $data_dir"
+        
+        if podman container exists "$container_name" 2>/dev/null; then
+            echo "Container status: $(podman inspect "$container_name" --format '{{.State.Status}}' 2>/dev/null)"
+            echo "Container image: $(podman inspect "$container_name" --format '{{.Config.Image}}' 2>/dev/null)"
+            if [ "$(podman inspect "$container_name" --format '{{.State.Status}}')" = "running" ]; then
+                echo "RabbitMQ status:"
+                podman exec "$container_name" rabbitmqctl status 2>/dev/null | head -20 || echo "  Cannot get RabbitMQ status"
+            fi
+        else
+            echo "❌ Container does not exist"
+        fi
+        
+        if [ -d "$data_dir" ]; then
+            echo "Data directory size: $(du -sh "$data_dir" 2>/dev/null | cut -f1)"
+            echo "Data directory contents: $(ls -la "$data_dir" 2>/dev/null | wc -l) files"
+        else
+            echo "❌ Data directory does not exist"
+        fi
+    fi
+    
+    echo "🔍 Debug information complete. Use this info for troubleshooting."
 }
 
 # Main command dispatcher
@@ -577,6 +901,7 @@ case "${1:-help}" in
     wipe) wipe "$2" ;;
     cleanup-all) cleanup_all ;;
     test-network) test_network ;;
+    debug) debug "$2" ;;
     help) show_help ;;
     *) echo "Unknown command: $1"; show_help; exit 1 ;;
 esac
