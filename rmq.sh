@@ -101,8 +101,8 @@ up() {
     
     echo "=== Starting RabbitMQ node $node_name ==="
     
-    # Remove existing container if it exists
-    podman rm -f "$container_name" 2>/dev/null || true
+    # Force cleanup any existing container/processes
+    force_cleanup "$node_name"
     
     # Start RabbitMQ container
     podman run -d \
@@ -240,7 +240,37 @@ down() {
     echo "Node $node_name stopped and removed"
 }
 
-# Wipe all data for a node
+# Forcefully clean up everything for a node
+force_cleanup() {
+    local node_name="$1"
+    local container_name="rabbitmq-$node_name"
+    local data_dir="$HOME/.local/share/rabbitmq/$node_name"
+    
+    echo "=== Force cleanup for RabbitMQ node $node_name ==="
+    
+    # Kill container if running
+    podman kill "$container_name" 2>/dev/null || true
+    
+    # Stop container if still running
+    podman stop "$container_name" 2>/dev/null || true
+    
+    # Remove container forcefully
+    podman rm -f "$container_name" 2>/dev/null || true
+    
+    # Clean up any leftover processes
+    pkill -f "rabbitmq.*$node_name" 2>/dev/null || true
+    
+    # Remove data directory forcefully
+    sudo rm -rf "$data_dir" 2>/dev/null || true
+    rm -rf "$data_dir" 2>/dev/null || true
+    
+    # Remove any volumes associated with the container
+    podman volume ls -q | grep -E "(rabbitmq|$node_name)" | xargs -r podman volume rm -f 2>/dev/null || true
+    
+    echo "Force cleanup completed for node $node_name"
+}
+
+# Wipe all data for a node (enhanced)
 wipe() {
     local node_name="$1"
     if [ -z "$node_name" ]; then
@@ -248,24 +278,54 @@ wipe() {
         exit 1
     fi
     
-    local container_name="rabbitmq-$node_name"
-    local data_dir="$HOME/.local/share/rabbitmq/$node_name"
-    
     echo "=== Wiping data for RabbitMQ node $node_name ==="
     echo "This will permanently delete all data for $node_name!"
     read -p "Are you sure? (y/N): " confirm
     
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
-        # Stop and remove container
-        podman stop "$container_name" 2>/dev/null || true
-        podman rm "$container_name" 2>/dev/null || true
-        
-        # Remove data directory
-        rm -rf "$data_dir"
-        
+        force_cleanup "$node_name"
         echo "Data for node $node_name has been wiped"
     else
         echo "Cancelled"
+    fi
+}
+
+# Clean up everything - all nodes and data
+cleanup_all() {
+    echo "=== COMPLETE CLEANUP - This will destroy ALL RabbitMQ data and containers ==="
+    echo "This will remove:"
+    echo "- All RabbitMQ containers (rmq1, rmq2, rmq3)"
+    echo "- All RabbitMQ data directories"
+    echo "- All RabbitMQ images"
+    echo ""
+    read -p "Are you ABSOLUTELY sure? Type 'YES' to confirm: " confirm
+    
+    if [ "$confirm" = "YES" ]; then
+        echo "Performing complete cleanup..."
+        
+        # Force cleanup all nodes
+        for node in rmq1 rmq2 rmq3; do
+            echo "Cleaning up $node..."
+            force_cleanup "$node"
+        done
+        
+        # Remove any remaining RabbitMQ containers
+        podman ps -a --filter ancestor=rabbitmq --format "{{.Names}}" | xargs -r podman rm -f 2>/dev/null || true
+        
+        # Remove RabbitMQ images
+        podman images --filter reference=rabbitmq --format "{{.Repository}}:{{.Tag}}" | xargs -r podman rmi -f 2>/dev/null || true
+        
+        # Clean up base directory
+        sudo rm -rf "$HOME/.local/share/rabbitmq" 2>/dev/null || true
+        rm -rf "$HOME/.local/share/rabbitmq" 2>/dev/null || true
+        
+        # Prune containers and volumes
+        podman container prune -f 2>/dev/null || true
+        podman volume prune -f 2>/dev/null || true
+        
+        echo "Complete cleanup finished. You can now start fresh."
+    else
+        echo "Cleanup cancelled"
     fi
 }
 
@@ -284,6 +344,7 @@ Commands:
   status [node]          - Show cluster status (default: rmq1)
   down <node>            - Stop and remove a node
   wipe <node>            - Completely wipe a node's data (WARNING: destructive!)
+  cleanup-all            - Complete cleanup of everything (VERY destructive!)
 
 Examples:
   $0 prep                # Prepare system
@@ -294,6 +355,7 @@ Examples:
   $0 status             # Show cluster status
   $0 down rmq2          # Stop rmq2 node
   $0 wipe rmq2          # Wipe rmq2 data
+  $0 cleanup-all        # Complete cleanup (DANGEROUS!)
 
 Note: Make sure to copy .env.example to .env and configure before use.
 EOF
@@ -308,6 +370,7 @@ case "${1:-help}" in
     status) status "$2" ;;
     down) down "$2" ;;
     wipe) wipe "$2" ;;
+    cleanup-all) cleanup_all ;;
     help) show_help ;;
     *) echo "Unknown command: $1"; show_help; exit 1 ;;
 esac
