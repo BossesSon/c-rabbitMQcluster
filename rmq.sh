@@ -431,29 +431,23 @@ policy() {
     fi
     echo "✅ RabbitMQ responding"
     
-    # Try the policy command with shorter timeout first
-    echo "Applying quorum policy (timeout 10s)..."
+    # In RabbitMQ 3.13, quorum queues are created by queue declaration, not policy
+    echo "RabbitMQ 3.13 detected - quorum queues don't use policies"
+    echo "Applying high availability policy instead..."
+    
     local policy_output
-    if policy_output=$(timeout 10 podman exec "$container_name" rabbitmqctl set_policy quorum-policy ".*" '{"x-queue-type":"quorum"}' --priority 10 --apply-to queues 2>&1); then
-        echo "✅ Quorum policy applied successfully!"
+    if policy_output=$(podman exec "$container_name" rabbitmqctl set_policy ha-cluster ".*" '{"ha-mode":"all","ha-sync-mode":"automatic"}' --priority 10 --apply-to queues 2>&1); then
+        echo "✅ High availability policy applied successfully!"
         echo "$policy_output"
+        echo ""
+        echo "📝 Note: For quorum queues in RabbitMQ 3.13:"
+        echo "   - Create queues with: rabbitmqctl declare queue name x-queue-type=quorum"
+        echo "   - Or use client libraries with quorum queue declaration"
+        echo "   - This HA policy ensures message durability across cluster nodes"
     else
-        local exit_code=$?
-        if [ $exit_code -eq 124 ]; then
-            echo "❌ Policy command timed out"
-        else
-            echo "❌ Policy failed:"
-            echo "$policy_output"
-            
-            # Try fallback to classic HA policy
-            echo ""
-            echo "Trying classic HA policy as fallback..."
-            if podman exec "$container_name" rabbitmqctl set_policy ha-all ".*" '{"ha-mode":"all"}' --priority 5 --apply-to queues 2>&1; then
-                echo "✅ Classic HA policy applied as fallback"
-            else
-                echo "❌ Both policies failed"
-            fi
-        fi
+        echo "❌ HA policy failed:"
+        echo "$policy_output"
+        exit 1
     fi
     
     echo -e "\n=== Current Policies ==="
