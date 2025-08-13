@@ -109,6 +109,9 @@ up() {
         --name "$container_name" \
         --hostname "$node_name" \
         --network host \
+        --add-host rmq1:"$RMQ1_HOST" \
+        --add-host rmq2:"$RMQ2_HOST" \
+        --add-host rmq3:"$RMQ3_HOST" \
         -v "$data_dir:/var/lib/rabbitmq" \
         -v "$data_dir/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro" \
         -e RABBITMQ_DEFAULT_USER="$RABBITMQ_ADMIN_USER" \
