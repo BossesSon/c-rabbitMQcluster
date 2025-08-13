@@ -423,31 +423,37 @@ policy() {
         echo "✅ Cluster status OK"
     fi
     
-    # Try the policy command with error output and timeout
-    echo "Applying policy..."
-    local policy_output
-    policy_output=$(timeout 15 podman exec "$container_name" rabbitmqctl set_policy \
-        quorum-policy ".*" '{"x-queue-type":"quorum"}' \
-        --priority 10 --apply-to queues 2>&1)
-    local policy_exit_code=$?
-    
-    if [ $policy_exit_code -eq 124 ]; then
-        echo "❌ Policy command timed out after 15s"
-        echo "RabbitMQ may be unresponsive"
+    # First try a simple policy test
+    echo "Testing rabbitmqctl responsiveness..."
+    if ! timeout 5 podman exec "$container_name" rabbitmqctl list_policies >/dev/null 2>&1; then
+        echo "❌ RabbitMQ not responding to commands"
         exit 1
-    elif [ $policy_exit_code -eq 0 ]; then
+    fi
+    echo "✅ RabbitMQ responding"
+    
+    # Try the policy command with shorter timeout first
+    echo "Applying quorum policy (timeout 10s)..."
+    local policy_output
+    if policy_output=$(timeout 10 podman exec "$container_name" rabbitmqctl set_policy quorum-policy ".*" '{"x-queue-type":"quorum"}' --priority 10 --apply-to queues 2>&1); then
         echo "✅ Quorum policy applied successfully!"
         echo "$policy_output"
     else
-        echo "❌ Policy failed:"
-        echo "$policy_output"
-        echo ""
-        echo "Possible fixes:"
-        echo "1. Ensure cluster has 3+ nodes for quorum queues"
-        echo "2. Try without quorum policy first:"
-        echo "   podman exec $container_name rabbitmqctl set_policy ha-all \".*\" '{\"ha-mode\":\"all\"}'"
-        echo "3. Check if running single node (quorum needs cluster)"
-        exit 1
+        local exit_code=$?
+        if [ $exit_code -eq 124 ]; then
+            echo "❌ Policy command timed out"
+        else
+            echo "❌ Policy failed:"
+            echo "$policy_output"
+            
+            # Try fallback to classic HA policy
+            echo ""
+            echo "Trying classic HA policy as fallback..."
+            if podman exec "$container_name" rabbitmqctl set_policy ha-all ".*" '{"ha-mode":"all"}' --priority 5 --apply-to queues 2>&1; then
+                echo "✅ Classic HA policy applied as fallback"
+            else
+                echo "❌ Both policies failed"
+            fi
+        fi
     fi
     
     echo -e "\n=== Current Policies ==="
