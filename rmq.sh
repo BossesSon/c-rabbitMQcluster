@@ -410,11 +410,17 @@ policy() {
     
     echo "Checking cluster status..."
     local cluster_output
-    cluster_output=$(podman exec "$container_name" rabbitmqctl cluster_status 2>&1)
-    if echo "$cluster_output" | grep -q "Error\|failed"; then
-        echo "❌ Cluster not ready:"
+    cluster_output=$(timeout 10 podman exec "$container_name" rabbitmqctl cluster_status 2>&1)
+    local cluster_exit_code=$?
+    
+    if [ $cluster_exit_code -eq 124 ]; then
+        echo "⚠️  Cluster status check timed out - RabbitMQ may be starting"
+    elif [ $cluster_exit_code -ne 0 ] || echo "$cluster_output" | grep -q "Error\|failed"; then
+        echo "❌ Cluster issue:"
         echo "$cluster_output"
-        exit 1
+        echo "Trying policy anyway..."
+    else
+        echo "✅ Cluster status OK"
     fi
     
     # Try the policy command with error output
