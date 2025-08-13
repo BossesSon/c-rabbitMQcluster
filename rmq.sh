@@ -55,8 +55,9 @@ prep() {
     sudo firewall-cmd --permanent --add-port=25672/tcp   # Inter-node communication
     sudo firewall-cmd --reload
     
-    # Create data directory
+    # Create data directory with proper permissions
     mkdir -p ~/.local/share/rabbitmq
+    chmod 755 ~/.local/share/rabbitmq
     
     # Enable lingering for rootless containers
     sudo loginctl enable-linger $(whoami)
@@ -106,7 +107,7 @@ up() {
     # Start RabbitMQ container
     podman run -d \
         --name "$container_name" \
-        --hostname "rabbit@$node_name" \
+        --hostname "$node_name" \
         --network host \
         -v "$data_dir:/var/lib/rabbitmq" \
         -v "$data_dir/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro" \
