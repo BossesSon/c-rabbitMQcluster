@@ -423,14 +423,21 @@ policy() {
         echo "✅ Cluster status OK"
     fi
     
-    # Try the policy command with error output
+    # Try the policy command with error output and timeout
+    echo "Applying policy..."
     local policy_output
-    policy_output=$(podman exec "$container_name" rabbitmqctl set_policy \
+    policy_output=$(timeout 15 podman exec "$container_name" rabbitmqctl set_policy \
         quorum-policy ".*" '{"x-queue-type":"quorum"}' \
         --priority 10 --apply-to queues 2>&1)
+    local policy_exit_code=$?
     
-    if [ $? -eq 0 ]; then
-        echo "✅ Quorum policy applied"
+    if [ $policy_exit_code -eq 124 ]; then
+        echo "❌ Policy command timed out after 15s"
+        echo "RabbitMQ may be unresponsive"
+        exit 1
+    elif [ $policy_exit_code -eq 0 ]; then
+        echo "✅ Quorum policy applied successfully!"
+        echo "$policy_output"
     else
         echo "❌ Policy failed:"
         echo "$policy_output"
