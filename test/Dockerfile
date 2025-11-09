@@ -17,17 +17,12 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy test scripts
-COPY producer.py .
-COPY consumer.py .
-COPY load_test_producer.py .
-COPY load_test_consumer.py .
-
-# Make scripts executable
-RUN chmod +x producer.py consumer.py
+# Copy simple multiprocess test scripts
+COPY simple_multiprocess_producer.py .
+COPY simple_multiprocess_consumer.py .
 
 # Set default command
-CMD ["python", "consumer.py"]
+CMD ["python"]
 
 # Add labels for documentation
 LABEL maintainer="RabbitMQ Cluster Test"

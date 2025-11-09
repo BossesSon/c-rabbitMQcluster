@@ -25,8 +25,13 @@ import pika
 import time
 import os
 import sys
+import traceback
 from multiprocessing import Process, Queue, Value
 from datetime import datetime
+
+# Force unbuffered output
+sys.stdout.flush()
+sys.stderr.flush()
 
 # ============================================================================
 # GLOBAL VARIABLES (loaded from environment)
@@ -116,6 +121,7 @@ def consumer_worker(worker_id, stats_queue, stop_flag):
             channels.append(channel)
 
         print(f"[Consumer Worker {worker_id}] Connected with {len(channels)} connections to RabbitMQ")
+        sys.stdout.flush()
 
         # ==================================================================
         # STEP 2: Consume messages
@@ -183,7 +189,11 @@ def consumer_worker(worker_id, stats_queue, stop_flag):
                 last_report_time = time.time()
 
     except Exception as e:
-        print(f"[Consumer Worker {worker_id}] Error: {e}")
+        print(f"[Consumer Worker {worker_id}] FATAL ERROR in main loop: {e}")
+        print(f"[Consumer Worker {worker_id}] Full traceback:")
+        traceback.print_exc()
+        sys.stdout.flush()
+        sys.stderr.flush()
 
     finally:
         # ==================================================================
@@ -206,6 +216,8 @@ def consumer_worker(worker_id, stats_queue, stop_flag):
         })
 
         print(f"[Consumer Worker {worker_id}] Finished: {messages_received} messages received, {errors} errors")
+        sys.stdout.flush()
+        sys.stderr.flush()
 
 
 # ============================================================================

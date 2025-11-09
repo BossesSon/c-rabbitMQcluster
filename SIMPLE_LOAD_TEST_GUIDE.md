@@ -31,12 +31,46 @@ test/requirements.txt                    ← Python dependencies
 
 - [ ] **Step 1**: Copy 6 files from Windows to Linux test server using WinSCP
 - [ ] **Step 2**: SSH into Linux test server
-- [ ] **Step 3**: Edit `simple_load_test.conf` (change IPs and passwords)
-- [ ] **Step 4**: Run `chmod +x simple_load_test.sh` (make it executable)
-- [ ] **Step 5**: Run `./simple_load_test.sh` (execute the test)
-- [ ] **Step 6**: Read the comprehensive report with push/pop capacity
+- [ ] **Step 3**: Fix Windows line endings (CRITICAL - see below)
+- [ ] **Step 4**: Edit `simple_load_test.conf` (change IPs and passwords)
+- [ ] **Step 5**: Run `chmod +x simple_load_test.sh` (make it executable)
+- [ ] **Step 6**: Run `./simple_load_test.sh` (execute the test)
+- [ ] **Step 7**: Read the comprehensive report with push/pop capacity
 
 **Total time**: ~5 minutes to setup, ~1-2 minutes per test
+
+---
+
+## ⚠️ CRITICAL: Fix Windows Line Endings (Do This First!)
+
+**If you copied files from Windows, you MUST run this command first or you'll get errors!**
+
+After copying files to Linux (Step 2), immediately run:
+
+```bash
+cd /root/rabbitmq-load-test
+
+# Fix Windows line endings (CRLF → LF)
+sed -i 's/\r$//' simple_load_test.sh
+sed -i 's/\r$//' simple_load_test.conf
+sed -i 's/\r$//' test/*.py
+```
+
+**Why?** Windows uses different line endings (`\r\n`) than Linux (`\n`). This causes the error:
+```
+/bin/bash^M: bad interpreter: No such file or directory
+```
+
+**Alternative method** (if sed doesn't work):
+```bash
+# Install dos2unix tool
+sudo dnf install -y dos2unix
+
+# Convert all files
+dos2unix simple_load_test.sh simple_load_test.conf test/*.py
+```
+
+**After running one of the above commands, continue with the rest of the steps.**
 
 ---
 

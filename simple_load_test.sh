@@ -278,8 +278,9 @@ run_load_test() {
     ${CONTAINER_CMD} run -d \
         --name simple-producer \
         --env-file /tmp/simple_load_test.env \
+        -e PYTHONUNBUFFERED=1 \
         rabbitmq-simple-test \
-        python simple_multiprocess_producer.py > /tmp/producer.log 2>&1
+        python -u simple_multiprocess_producer.py > /tmp/producer.log 2>&1
 
     sleep 2  # Give producer time to start
 
@@ -287,8 +288,9 @@ run_load_test() {
     ${CONTAINER_CMD} run -d \
         --name simple-consumer \
         --env-file /tmp/simple_load_test.env \
+        -e PYTHONUNBUFFERED=1 \
         rabbitmq-simple-test \
-        python simple_multiprocess_consumer.py > /tmp/consumer.log 2>&1
+        python -u simple_multiprocess_consumer.py > /tmp/consumer.log 2>&1
 
     print_success "Producer and consumer started"
     print_info "Test will run for ${TEST_DURATION_SECONDS} seconds..."
