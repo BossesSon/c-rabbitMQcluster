@@ -173,13 +173,6 @@ def producer_worker(worker_id, stats_queue, stop_flag):
             current_channel_index = (current_channel_index + 1) % len(channels)
 
             try:
-                # Check if connection is blocked (flow control)
-                if connections[current_channel_index - 1].is_blocked:
-                    print(f"[Producer Worker {worker_id}] WARNING: Connection is BLOCKED by RabbitMQ flow control")
-                    sys.stdout.flush()
-                    time.sleep(0.1)  # Wait a bit
-                    continue
-
                 # Publish message to RabbitMQ
                 channel.basic_publish(
                     exchange='',  # Default exchange (direct to queue)
