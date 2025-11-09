@@ -152,14 +152,20 @@ def producer_worker(worker_id, stats_queue, stop_flag):
         # STEP 2: Send messages at controlled rate
         # ==================================================================
 
+        print(f"[Producer Worker {worker_id}] Entering message loop. Delay between messages: {delay_between_messages:.6f}s")
+        sys.stdout.flush()
+
         start_time = time.time()
         last_report_time = start_time
+        last_progress_report = start_time
         current_channel_index = 0  # Round-robin through channels
 
         while not stop_flag.value:
             # Check if test duration exceeded
             elapsed = time.time() - start_time
             if elapsed >= TEST_DURATION_SECONDS:
+                print(f"[Producer Worker {worker_id}] Test duration reached. Stopping.")
+                sys.stdout.flush()
                 break
 
             # Select channel to use (round-robin for load balancing)
@@ -167,6 +173,13 @@ def producer_worker(worker_id, stats_queue, stop_flag):
             current_channel_index = (current_channel_index + 1) % len(channels)
 
             try:
+                # Check if connection is blocked (flow control)
+                if connections[current_channel_index - 1].is_blocked:
+                    print(f"[Producer Worker {worker_id}] WARNING: Connection is BLOCKED by RabbitMQ flow control")
+                    sys.stdout.flush()
+                    time.sleep(0.1)  # Wait a bit
+                    continue
+
                 # Publish message to RabbitMQ
                 channel.basic_publish(
                     exchange='',  # Default exchange (direct to queue)
@@ -180,8 +193,21 @@ def producer_worker(worker_id, stats_queue, stop_flag):
                 messages_sent += 1
                 bytes_sent += MESSAGE_SIZE_BYTES
 
+                # Report first message to confirm it's working
+                if messages_sent == 1:
+                    print(f"[Producer Worker {worker_id}] SUCCESS! First message sent")
+                    sys.stdout.flush()
+
+                # Progress report every 1000 messages
+                if messages_sent % 1000 == 0:
+                    print(f"[Producer Worker {worker_id}] Progress: {messages_sent} messages sent")
+                    sys.stdout.flush()
+
             except Exception as e:
                 errors += 1
+                print(f"[Producer Worker {worker_id}] ERROR during publish: {e}")
+                sys.stdout.flush()
+
                 # Try to reconnect if connection lost
                 try:
                     connections[current_channel_index].close()
@@ -195,8 +221,11 @@ def producer_worker(worker_id, stats_queue, stop_flag):
                     parameters = pika.ConnectionParameters(host=host, port=RABBITMQ_PORT, credentials=credentials)
                     connections[current_channel_index] = pika.BlockingConnection(parameters)
                     channels[current_channel_index] = connections[current_channel_index].channel()
+                    print(f"[Producer Worker {worker_id}] Reconnected successfully")
+                    sys.stdout.flush()
                 except Exception as reconnect_error:
                     print(f"[Producer Worker {worker_id}] Reconnection failed: {reconnect_error}")
+                    sys.stdout.flush()
 
             # Rate limiting: Sleep to maintain target messages per second
             if delay_between_messages > 0:
