@@ -26,8 +26,13 @@ import os
 import sys
 import json
 import signal
+import traceback
 from multiprocessing import Process, Queue, Value
 from datetime import datetime
+
+# Force unbuffered output
+sys.stdout.flush()
+sys.stderr.flush()
 
 # ============================================================================
 # GLOBAL VARIABLES (loaded from environment)
@@ -68,27 +73,46 @@ def producer_worker(worker_id, stats_queue, stop_flag):
         stop_flag: Shared flag that tells worker when to stop
     """
 
-    # Calculate how many messages THIS worker should send per second
-    # Example: If total is 10,000 msg/s and 4 workers, each sends 2,500 msg/s
-    worker_target_rate = MESSAGES_PER_SECOND / PRODUCER_WORKERS
-
-    # Calculate delay between messages to achieve target rate
-    # Example: 2,500 msg/s means 1 message every 0.0004 seconds
-    messages_per_connection = worker_target_rate / CONNECTIONS_PER_WORKER
-    delay_between_messages = 1.0 / messages_per_connection if messages_per_connection > 0 else 0
-
-    # Create the message payload (random data of specified size)
-    # We create it once and reuse it (more efficient than creating each time)
-    message_body = 'X' * MESSAGE_SIZE_BYTES
-
     # Statistics counters
     messages_sent = 0
     bytes_sent = 0
     errors = 0
-
-    # List to hold all connections
     connections = []
     channels = []
+
+    try:
+        print(f"[Producer Worker {worker_id}] Starting initialization...")
+        sys.stdout.flush()
+
+        # Calculate how many messages THIS worker should send per second
+        # Example: If total is 10,000 msg/s and 4 workers, each sends 2,500 msg/s
+        worker_target_rate = MESSAGES_PER_SECOND / PRODUCER_WORKERS
+
+        # Calculate delay between messages to achieve target rate
+        # Example: 2,500 msg/s means 1 message every 0.0004 seconds
+        messages_per_connection = worker_target_rate / CONNECTIONS_PER_WORKER
+        delay_between_messages = 1.0 / messages_per_connection if messages_per_connection > 0 else 0
+
+        print(f"[Producer Worker {worker_id}] Target rate: {worker_target_rate:.1f} msg/s, Delay: {delay_between_messages:.6f}s")
+        sys.stdout.flush()
+
+        # Create the message payload (random data of specified size)
+        # We create it once and reuse it (more efficient than creating each time)
+        print(f"[Producer Worker {worker_id}] Creating message body of {MESSAGE_SIZE_BYTES} bytes...")
+        sys.stdout.flush()
+
+        message_body = 'X' * MESSAGE_SIZE_BYTES
+
+        print(f"[Producer Worker {worker_id}] Message body created successfully")
+        sys.stdout.flush()
+
+    except Exception as e:
+        print(f"[Producer Worker {worker_id}] FATAL ERROR during initialization: {e}")
+        print(f"[Producer Worker {worker_id}] Full traceback:")
+        traceback.print_exc()
+        sys.stdout.flush()
+        sys.stderr.flush()
+        return
 
     try:
         # ==================================================================
@@ -122,6 +146,7 @@ def producer_worker(worker_id, stats_queue, stop_flag):
             channels.append(channel)
 
         print(f"[Producer Worker {worker_id}] Connected with {len(channels)} connections to RabbitMQ")
+        sys.stdout.flush()
 
         # ==================================================================
         # STEP 2: Send messages at controlled rate
@@ -188,7 +213,11 @@ def producer_worker(worker_id, stats_queue, stop_flag):
                 last_report_time = time.time()
 
     except Exception as e:
-        print(f"[Producer Worker {worker_id}] Error: {e}")
+        print(f"[Producer Worker {worker_id}] FATAL ERROR in main loop: {e}")
+        print(f"[Producer Worker {worker_id}] Full traceback:")
+        traceback.print_exc()
+        sys.stdout.flush()
+        sys.stderr.flush()
 
     finally:
         # ==================================================================
@@ -211,6 +240,8 @@ def producer_worker(worker_id, stats_queue, stop_flag):
         })
 
         print(f"[Producer Worker {worker_id}] Finished: {messages_sent} messages sent, {errors} errors")
+        sys.stdout.flush()
+        sys.stderr.flush()
 
 
 # ============================================================================
