@@ -186,14 +186,23 @@ def producer_worker(worker_id, stats_queue, stop_flag):
                 messages_sent += 1
                 bytes_sent += MESSAGE_SIZE_BYTES
 
-                # Report first message to confirm it's working
+                # Report first few messages to confirm it's working
                 if messages_sent == 1:
                     print(f"[Producer Worker {worker_id}] SUCCESS! First message sent")
                     sys.stdout.flush()
 
-                # Progress report every 1000 messages
-                if messages_sent % 1000 == 0:
+                if messages_sent == 2:
+                    print(f"[Producer Worker {worker_id}] SUCCESS! Second message sent (loop is working!)")
+                    sys.stdout.flush()
+
+                # Progress report every 10 messages (for debugging)
+                if messages_sent % 10 == 0:
                     print(f"[Producer Worker {worker_id}] Progress: {messages_sent} messages sent")
+                    sys.stdout.flush()
+
+                # Report every 1000 messages
+                if messages_sent % 1000 == 0:
+                    print(f"[Producer Worker {worker_id}] MILESTONE: {messages_sent} messages sent")
                     sys.stdout.flush()
 
             except Exception as e:
@@ -223,6 +232,11 @@ def producer_worker(worker_id, stats_queue, stop_flag):
             # Rate limiting: Sleep to maintain target messages per second
             if delay_between_messages > 0:
                 time.sleep(delay_between_messages)
+
+            # Debug: Log every 100 loops to confirm we're looping
+            if messages_sent > 0 and messages_sent % 100 == 0:
+                print(f"[Producer Worker {worker_id}] Loop continuing, total sent: {messages_sent}")
+                sys.stdout.flush()
 
             # Report statistics every second
             if time.time() - last_report_time >= 1.0:
