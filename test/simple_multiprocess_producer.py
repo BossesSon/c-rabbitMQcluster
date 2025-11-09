@@ -235,7 +235,9 @@ def producer_worker(worker_id, stats_queue, stop_flag):
 
             # Debug: Log every 100 loops to confirm we're looping
             if messages_sent > 0 and messages_sent % 100 == 0:
-                print(f"[Producer Worker {worker_id}] Loop continuing, total sent: {messages_sent}")
+                elapsed_so_far = time.time() - start_time
+                rate_so_far = messages_sent / elapsed_so_far if elapsed_so_far > 0 else 0
+                print(f"[Producer Worker {worker_id}] Milestone {messages_sent}: elapsed={elapsed_so_far:.1f}s, rate={rate_so_far:.1f} msg/s")
                 sys.stdout.flush()
 
             # Report statistics every second
@@ -247,6 +249,11 @@ def producer_worker(worker_id, stats_queue, stop_flag):
                     'errors': errors
                 })
                 last_report_time = time.time()
+
+        # Loop exited - log why
+        final_elapsed = time.time() - start_time
+        print(f"[Producer Worker {worker_id}] Loop exited. Duration: {final_elapsed:.1f}s, Messages sent: {messages_sent}, Stop flag: {stop_flag.value}")
+        sys.stdout.flush()
 
     except Exception as e:
         print(f"[Producer Worker {worker_id}] FATAL ERROR in main loop: {e}")

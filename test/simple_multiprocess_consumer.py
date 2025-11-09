@@ -61,9 +61,9 @@ STOP_FLAG = None
 def consumer_worker(worker_id, stats_queue, stop_flag):
     """
     This function runs in a separate process. Each worker:
-    1. Creates multiple connections to RabbitMQ
-    2. Receives messages from the queue
-    3. Acknowledges messages (tells RabbitMQ they were processed)
+    1. Creates a connection to RabbitMQ
+    2. Uses basic_consume (push-based, RECOMMENDED by RabbitMQ)
+    3. Receives messages via callback as they arrive
     4. Reports statistics back to main process
 
     Args:
@@ -72,121 +72,148 @@ def consumer_worker(worker_id, stats_queue, stop_flag):
         stop_flag: Shared flag that tells worker when to stop
     """
 
-    # Statistics counters
-    messages_received = 0
-    bytes_received = 0
-    errors = 0
+    # Statistics counters (shared with callback via class)
+    class Stats:
+        def __init__(self):
+            self.messages_received = 0
+            self.bytes_received = 0
+            self.errors = 0
+            self.start_time = time.time()
+            self.last_report_time = time.time()
 
-    # Start time for this worker
-    start_time = time.time()
-    last_report_time = start_time
+    stats = Stats()
 
-    # List to hold all connections and channels
-    connections = []
-    channels = []
+    # Callback function called by RabbitMQ when message arrives
+    def on_message_callback(ch, method, properties, body):
+        """
+        This function is called automatically by RabbitMQ when a message arrives.
+        This is the RECOMMENDED approach (basic_consume with callback).
+
+        Args:
+            ch: Channel
+            method: Delivery method (contains delivery_tag for ack)
+            properties: Message properties
+            body: Message content
+        """
+        try:
+            # Count the message
+            stats.messages_received += 1
+            stats.bytes_received += len(body)
+
+            # Acknowledge the message (tell RabbitMQ we processed it)
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+
+            # Report first few messages for debugging
+            if stats.messages_received == 1:
+                print(f"[Consumer Worker {worker_id}] SUCCESS! First message received")
+                sys.stdout.flush()
+
+            if stats.messages_received == 2:
+                print(f"[Consumer Worker {worker_id}] SUCCESS! Second message received (consuming is working!)")
+                sys.stdout.flush()
+
+            # Progress report every 10 messages
+            if stats.messages_received % 10 == 0:
+                print(f"[Consumer Worker {worker_id}] Progress: {stats.messages_received} messages received")
+                sys.stdout.flush()
+
+            # Milestone every 1000 messages
+            if stats.messages_received % 1000 == 0:
+                print(f"[Consumer Worker {worker_id}] MILESTONE: {stats.messages_received} messages received")
+                sys.stdout.flush()
+
+            # Report statistics every second
+            if time.time() - stats.last_report_time >= 1.0:
+                stats_queue.put({
+                    'worker_id': worker_id,
+                    'messages_received': stats.messages_received,
+                    'bytes_received': stats.bytes_received,
+                    'errors': stats.errors
+                })
+                stats.last_report_time = time.time()
+
+        except Exception as e:
+            stats.errors += 1
+            print(f"[Consumer Worker {worker_id}] ERROR in callback: {e}")
+            traceback.print_exc()
+            sys.stdout.flush()
+
+    # Connection and channel
+    connection = None
+    channel = None
 
     try:
         # ==================================================================
-        # STEP 1: Connect to RabbitMQ (create multiple connections)
+        # STEP 1: Connect to RabbitMQ
         # ==================================================================
 
-        # Create multiple connections for higher throughput
-        for conn_id in range(CONNECTIONS_PER_WORKER):
-            # Choose which RabbitMQ server to connect to (spread the load)
-            host = RABBITMQ_HOSTS[conn_id % len(RABBITMQ_HOSTS)]
+        print(f"[Consumer Worker {worker_id}] Starting initialization...")
+        sys.stdout.flush()
 
-            # Connection parameters
-            credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASSWORD)
-            parameters = pika.ConnectionParameters(
-                host=host,
-                port=RABBITMQ_PORT,
-                credentials=credentials,
-                heartbeat=600,  # Keep connection alive
-                blocked_connection_timeout=300
-            )
+        # Choose RabbitMQ server (round-robin)
+        host = RABBITMQ_HOSTS[worker_id % len(RABBITMQ_HOSTS)]
 
-            # Establish connection
-            connection = pika.BlockingConnection(parameters)
-            channel = connection.channel()
+        # Connection parameters
+        credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASSWORD)
+        parameters = pika.ConnectionParameters(
+            host=host,
+            port=RABBITMQ_PORT,
+            credentials=credentials,
+            heartbeat=600,  # Keep connection alive
+            blocked_connection_timeout=300
+        )
 
-            # Set Quality of Service (QoS) - controls prefetch
-            # This tells RabbitMQ: "Send me up to PREFETCH_COUNT messages before I ack"
-            # Higher prefetch = better throughput, but more messages at risk if consumer crashes
-            channel.basic_qos(prefetch_count=PREFETCH_COUNT)
+        # Establish connection
+        print(f"[Consumer Worker {worker_id}] Connecting to {host}:{RABBITMQ_PORT}...")
+        sys.stdout.flush()
 
-            # Declare the queue (ensures it exists)
-            channel.queue_declare(queue=QUEUE_NAME, durable=True)
+        connection = pika.BlockingConnection(parameters)
+        channel = connection.channel()
 
-            connections.append(connection)
-            channels.append(channel)
+        # Set Quality of Service (QoS) - controls prefetch
+        # This tells RabbitMQ: "Send me up to PREFETCH_COUNT messages before I ack"
+        # Higher prefetch = better throughput, but more messages at risk if consumer crashes
+        channel.basic_qos(prefetch_count=PREFETCH_COUNT)
 
-        print(f"[Consumer Worker {worker_id}] Connected with {len(channels)} connections to RabbitMQ")
+        # Declare the queue (ensures it exists)
+        channel.queue_declare(queue=QUEUE_NAME, durable=True)
+
+        print(f"[Consumer Worker {worker_id}] Connected to RabbitMQ on {host}")
         sys.stdout.flush()
 
         # ==================================================================
-        # STEP 2: Consume messages
+        # STEP 2: Start consuming with basic_consume (RECOMMENDED)
         # ==================================================================
 
-        # We'll use a simple polling approach (repeatedly call basic_get)
-        # This is simpler than callbacks and works well for high throughput
+        print(f"[Consumer Worker {worker_id}] Starting basic_consume (push-based consumption)...")
+        sys.stdout.flush()
 
-        current_channel_index = 0  # Round-robin through channels
+        # Register the callback - RabbitMQ will PUSH messages to us
+        # This is the RECOMMENDED approach (not basic_get polling)
+        channel.basic_consume(
+            queue=QUEUE_NAME,
+            on_message_callback=on_message_callback,
+            auto_ack=False  # Manual acknowledgment for reliability
+        )
 
+        print(f"[Consumer Worker {worker_id}] Consuming messages for {TEST_DURATION_SECONDS} seconds...")
+        sys.stdout.flush()
+
+        # Consume messages with timeout
+        # We'll check stop_flag and timeout periodically
         while not stop_flag.value:
             # Check if test duration exceeded
-            elapsed = time.time() - start_time
+            elapsed = time.time() - stats.start_time
             if elapsed >= TEST_DURATION_SECONDS:
+                print(f"[Consumer Worker {worker_id}] Test duration reached. Stopping.")
+                sys.stdout.flush()
                 break
 
-            # Select channel to use (round-robin for load balancing)
-            channel = channels[current_channel_index]
-            current_channel_index = (current_channel_index + 1) % len(channels)
+            # Process messages for a short time (allows checking stop_flag)
+            connection.process_data_events(time_limit=1.0)
 
-            try:
-                # Try to get a message from the queue
-                # auto_ack=False means we'll manually acknowledge (more reliable)
-                method_frame, properties, body = channel.basic_get(queue=QUEUE_NAME, auto_ack=False)
-
-                if method_frame:
-                    # We received a message!
-                    messages_received += 1
-                    bytes_received += len(body)
-
-                    # Acknowledge the message (tells RabbitMQ we processed it successfully)
-                    channel.basic_ack(delivery_tag=method_frame.delivery_tag)
-
-                else:
-                    # Queue is empty, wait a tiny bit before trying again
-                    time.sleep(0.001)
-
-            except Exception as e:
-                errors += 1
-                # Try to reconnect if connection lost
-                try:
-                    connections[current_channel_index].close()
-                except:
-                    pass
-
-                # Reconnect
-                try:
-                    host = RABBITMQ_HOSTS[current_channel_index % len(RABBITMQ_HOSTS)]
-                    credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASSWORD)
-                    parameters = pika.ConnectionParameters(host=host, port=RABBITMQ_PORT, credentials=credentials)
-                    connections[current_channel_index] = pika.BlockingConnection(parameters)
-                    channels[current_channel_index] = connections[current_channel_index].channel()
-                    channels[current_channel_index].basic_qos(prefetch_count=PREFETCH_COUNT)
-                except Exception as reconnect_error:
-                    print(f"[Consumer Worker {worker_id}] Reconnection failed: {reconnect_error}")
-
-            # Report statistics every second
-            if time.time() - last_report_time >= 1.0:
-                stats_queue.put({
-                    'worker_id': worker_id,
-                    'messages_received': messages_received,
-                    'bytes_received': bytes_received,
-                    'errors': errors
-                })
-                last_report_time = time.time()
+        print(f"[Consumer Worker {worker_id}] Stopping consumption...")
+        sys.stdout.flush()
 
     except Exception as e:
         print(f"[Consumer Worker {worker_id}] FATAL ERROR in main loop: {e}")
@@ -197,25 +224,28 @@ def consumer_worker(worker_id, stats_queue, stop_flag):
 
     finally:
         # ==================================================================
-        # STEP 3: Clean up (close all connections)
+        # STEP 3: Clean up (close connection)
         # ==================================================================
 
-        for connection in connections:
+        if connection:
             try:
                 connection.close()
-            except:
-                pass
+                print(f"[Consumer Worker {worker_id}] Connection closed")
+                sys.stdout.flush()
+            except Exception as e:
+                print(f"[Consumer Worker {worker_id}] Error closing connection: {e}")
+                sys.stdout.flush()
 
         # Send final statistics
         stats_queue.put({
             'worker_id': worker_id,
-            'messages_received': messages_received,
-            'bytes_received': bytes_received,
-            'errors': errors,
+            'messages_received': stats.messages_received,
+            'bytes_received': stats.bytes_received,
+            'errors': stats.errors,
             'final': True
         })
 
-        print(f"[Consumer Worker {worker_id}] Finished: {messages_received} messages received, {errors} errors")
+        print(f"[Consumer Worker {worker_id}] Finished: {stats.messages_received} messages received, {stats.errors} errors")
         sys.stdout.flush()
         sys.stderr.flush()
 

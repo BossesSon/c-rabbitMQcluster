@@ -5,7 +5,8 @@
       "Bash(dir)",
       "Bash(mkdir:*)",
       "Bash(dir:*)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "WebSearch"
     ],
     "deny": []
   },

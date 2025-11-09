@@ -101,3 +101,13 @@ The system includes a comprehensive load test setup capable of:
 - **Load Test Dashboard**: Pre-configured for real-time monitoring
 
 See `LOAD_TEST.md` for complete load testing documentation.
+
+## RabbitMQ Python Pika Documentation
+
+See **`RABBITMQ_DOCUMENTATION.md`** for comprehensive RabbitMQ Python Pika reference including:
+- **Message persistence** (persistent messages, durable queues)
+- **Consumer patterns** (basic_consume vs basic_get)
+- **Performance best practices** (prefetch, batch acknowledgments)
+- **Common issues and solutions**
+
+**CRITICAL**: Always use `basic_consume` (push-based) for consumers, NOT `basic_get` (polling). The `basic_get` approach is highly inefficient and discouraged by RabbitMQ official documentation.
