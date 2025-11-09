@@ -11,12 +11,17 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
+# Copy requirements file
+COPY requirements.txt .
+
 # Install Python dependencies
-RUN pip install --no-cache-dir pika==1.3.2
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy test scripts
 COPY producer.py .
 COPY consumer.py .
+COPY load_test_producer.py .
+COPY load_test_consumer.py .
 
 # Make scripts executable
 RUN chmod +x producer.py consumer.py

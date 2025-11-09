@@ -1,0 +1,7 @@
+# Python dependencies for RabbitMQ load testing
+
+# AMQP client library
+pika==1.3.2
+
+# Prometheus metrics client (required by load_test_producer.py)
+prometheus_client==0.20.0

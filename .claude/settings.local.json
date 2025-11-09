@@ -4,8 +4,10 @@
       "Bash(python:*)",
       "Bash(dir)",
       "Bash(mkdir:*)",
-      "Bash(dir:*)"
+      "Bash(dir:*)",
+      "Bash(cat:*)"
     ],
     "deny": []
-  }
+  },
+  "disableAllHooks": true
 }

@@ -1,0 +1,80 @@
+# Prometheus configuration for RabbitMQ Load Test monitoring
+# This is a TEMPLATE file - do not edit directly
+# Run './load_test.sh prep' to generate prometheus.yml from this template
+
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+  scrape_timeout: 4s
+
+rule_files:
+  - "alert_rules.yml"
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+
+scrape_configs:
+  # RabbitMQ Management Plugin Metrics
+  - job_name: 'rabbitmq-management'
+    static_configs:
+      - targets:
+          - '{{RMQ1_HOST}}:15672'
+          - '{{RMQ2_HOST}}:15672'
+          - '{{RMQ3_HOST}}:15672'
+    metrics_path: '/api/metrics'
+    basic_auth:
+      username: '{{RABBITMQ_ADMIN_USER}}'
+      password: '{{RABBITMQ_ADMIN_PASSWORD}}'
+    scrape_interval: 2s
+
+  # RabbitMQ Exporter (detailed metrics)
+  - job_name: 'rabbitmq-exporter'
+    static_configs:
+      - targets: ['rabbitmq-exporter:9419']
+    scrape_interval: 2s
+
+  # System metrics from Node Exporters
+  - job_name: 'node-exporter-rmq1'
+    static_configs:
+      - targets: ['{{RMQ1_HOST}}:9100']
+    scrape_interval: 5s
+
+  - job_name: 'node-exporter-rmq2'
+    static_configs:
+      - targets: ['{{RMQ2_HOST}}:9100']
+    scrape_interval: 5s
+
+  - job_name: 'node-exporter-rmq3'
+    static_configs:
+      - targets: ['{{RMQ3_HOST}}:9100']
+    scrape_interval: 5s
+
+  # Test server metrics
+  - job_name: 'node-exporter-test'
+    static_configs:
+      - targets: ['{{TEST_HOST}}:9100']
+    scrape_interval: 5s
+
+  # Container metrics
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets:
+          - '{{RMQ1_HOST}}:8080'
+          - '{{RMQ2_HOST}}:8080'
+          - '{{RMQ3_HOST}}:8080'
+          - '{{TEST_HOST}}:8080'
+    scrape_interval: 5s
+
+  # Load test custom metrics
+  - job_name: 'load-test-metrics'
+    static_configs:
+      - targets: ['load-test-metrics:9091']
+    scrape_interval: 1s
+    honor_labels: true
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
