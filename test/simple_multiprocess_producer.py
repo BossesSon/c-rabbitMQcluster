@@ -138,6 +138,11 @@ def producer_worker(worker_id, stats_queue, stop_flag):
             connection = pika.BlockingConnection(parameters)
             channel = connection.channel()
 
+            # CRITICAL: Enable publisher confirms
+            # This makes basic_publish WAIT for RabbitMQ to confirm receipt
+            # Without this, messages are buffered and may be SILENTLY LOST
+            channel.confirm_delivery()
+
             # Declare the queue (creates it if it doesn't exist)
             # durable=True means queue survives RabbitMQ restart
             channel.queue_declare(queue=QUEUE_NAME, durable=True)
@@ -223,6 +228,8 @@ def producer_worker(worker_id, stats_queue, stop_flag):
                     parameters = pika.ConnectionParameters(host=host, port=RABBITMQ_PORT, credentials=credentials)
                     connections[current_channel_index] = pika.BlockingConnection(parameters)
                     channels[current_channel_index] = connections[current_channel_index].channel()
+                    # Re-enable publisher confirms on reconnected channel
+                    channels[current_channel_index].confirm_delivery()
                     print(f"[Producer Worker {worker_id}] Reconnected successfully")
                     sys.stdout.flush()
                 except Exception as reconnect_error:

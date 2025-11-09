@@ -1,8 +1,14 @@
 # Quick Deployment Instructions
 
+## CRITICAL FIX: Publisher Confirms Added ⚠️
+
+**THE PROBLEM WAS**: Producer was sending messages WITHOUT publisher confirms enabled. Messages were being buffered by Pika and **SILENTLY DROPPED** after ~130 messages. RabbitMQ never received them.
+
+**THE FIX**: Added `channel.confirm_delivery()` to **guarantee** messages reach RabbitMQ.
+
 ## Files Changed
 1. `simple_load_test.sh` - Added unbuffered Python output
-2. `test/simple_multiprocess_producer.py` - Added detailed debug logging, timing analysis
+2. `test/simple_multiprocess_producer.py` - **CRITICAL FIX: Added `confirm_delivery()` + detailed debug logging**
 3. `test/simple_multiprocess_consumer.py` - **REWRITTEN to use basic_consume (push-based, RECOMMENDED)**
 
 ## What to Copy to Linux

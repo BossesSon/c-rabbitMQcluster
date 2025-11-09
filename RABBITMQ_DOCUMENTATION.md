@@ -9,6 +9,42 @@
 
 ---
 
+## Publisher Confirms (CRITICAL!)
+
+### ⚠️ WARNING: Messages Can Be Silently Lost Without Publisher Confirms
+
+**CRITICAL ISSUE**: With `BlockingConnection`, `basic_publish()` is **synchronous** but does **NOT** wait for confirmation from RabbitMQ **UNLESS you enable publisher confirms**.
+
+**What happens without publisher confirms:**
+1. Messages go into Pika's internal buffer
+2. `basic_publish()` returns immediately (appears successful)
+3. If buffer fills or connection blocks, **messages are SILENTLY DROPPED**
+4. Producer has no idea messages were lost
+5. RabbitMQ never receives the messages
+
+**Solution: Enable Publisher Confirms**
+
+```python
+# BEFORE publishing any messages, enable confirms:
+channel.confirm_delivery()
+
+# Now basic_publish waits for RabbitMQ to acknowledge
+channel.basic_publish(
+    exchange='',
+    routing_key='task_queue',
+    body=message,
+    properties=pika.BasicProperties(delivery_mode=2)
+)
+```
+
+**With publisher confirms enabled:**
+- Each `basic_publish()` **blocks** until RabbitMQ confirms receipt
+- If message can't be delivered, raises `pika.exceptions.UnroutableError`
+- **Guarantees** messages actually reach RabbitMQ
+- Slower (adds latency) but **reliable**
+
+---
+
 ## Message Persistence
 
 ### Making Messages Persistent
@@ -16,6 +52,10 @@
 To mark messages as persistent (survive RabbitMQ restart):
 
 ```python
+# Enable publisher confirms (CRITICAL!)
+channel.confirm_delivery()
+
+# Publish persistent message
 channel.basic_publish(
     exchange='',
     routing_key='task_queue',
