@@ -168,7 +168,7 @@ up() {
 
     # Create data directory after cleanup (use sudo for /var/lib)
     sudo mkdir -p "$data_dir"
-    sudo chown -R $(whoami):$(whoami) "$data_dir"
+    sudo chown -R $(id -u):$(id -g) "$data_dir"
     
     # Copy rabbitmq.conf to data directory
     if [ -f "rabbitmq.conf" ]; then
