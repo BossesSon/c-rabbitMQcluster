@@ -148,10 +148,10 @@ up() {
     fi
     
     check_env
-    
+
     local container_name="rabbitmq-$node_name"
     local node_host
-    local data_dir="$HOME/.local/share/rabbitmq/$node_name"
+    local data_dir="/var/lib/rabbitmq/$node_name"
     
     # Determine node host
     case "$node_name" in
@@ -165,9 +165,10 @@ up() {
     
     # Force cleanup any existing container/processes
     force_cleanup "$node_name"
-    
-    # Create data directory after cleanup
-    mkdir -p "$data_dir"
+
+    # Create data directory after cleanup (use sudo for /var/lib)
+    sudo mkdir -p "$data_dir"
+    sudo chown -R $(whoami):$(whoami) "$data_dir"
     
     # Copy rabbitmq.conf to data directory
     if [ -f "rabbitmq.conf" ]; then
