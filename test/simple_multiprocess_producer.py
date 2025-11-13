@@ -135,13 +135,16 @@ def producer_worker(worker_id, stats_queue, stop_flag):
             )
 
             # Establish connection
+            print(f"[Producer Worker {worker_id}] Connecting to {host}:{RABBITMQ_PORT} (connection {conn_id+1}/{CONNECTIONS_PER_WORKER})")
+            sys.stdout.flush()
+
             connection = pika.BlockingConnection(parameters)
             channel = connection.channel()
 
-            # CRITICAL: Enable publisher confirms
-            # This makes basic_publish WAIT for RabbitMQ to confirm receipt
-            # Without this, messages are buffered and may be SILENTLY LOST
-            channel.confirm_delivery()
+            # MAXIMUM THROUGHPUT MODE: Publisher confirms DISABLED
+            # Fire-and-forget for maximum performance
+            # mandatory=True will still raise exceptions if routing fails
+            # (channel.confirm_delivery() is NOT called - removed for throughput)
 
             # Declare the queue (creates it if it doesn't exist)
             # durable=True means queue survives RabbitMQ restart
@@ -150,7 +153,10 @@ def producer_worker(worker_id, stats_queue, stop_flag):
             connections.append(connection)
             channels.append(channel)
 
-        print(f"[Producer Worker {worker_id}] Connected with {len(channels)} connections to RabbitMQ")
+            print(f"[Producer Worker {worker_id}] ✓ Connected to {host} (connection {conn_id+1}/{CONNECTIONS_PER_WORKER})")
+            sys.stdout.flush()
+
+        print(f"[Producer Worker {worker_id}] ✓ All {len(channels)} connections established successfully")
         sys.stdout.flush()
 
         # ==================================================================
@@ -185,7 +191,8 @@ def producer_worker(worker_id, stats_queue, stop_flag):
                     body=message_body,
                     properties=pika.BasicProperties(
                         delivery_mode=2,  # Make message persistent (saved to disk)
-                    )
+                    ),
+                    mandatory=True  # Raise exception if message cannot be routed
                 )
 
                 messages_sent += 1
@@ -212,10 +219,20 @@ def producer_worker(worker_id, stats_queue, stop_flag):
 
             except Exception as e:
                 errors += 1
-                print(f"[Producer Worker {worker_id}] ERROR during publish: {e}")
+                error_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+                error_type = type(e).__name__
+                print(f"[Producer Worker {worker_id}] ❌ ERROR at {error_time}")
+                print(f"[Producer Worker {worker_id}]    Type: {error_type}")
+                print(f"[Producer Worker {worker_id}]    Message: {e}")
+                print(f"[Producer Worker {worker_id}]    Channel: {current_channel_index}")
+                print(f"[Producer Worker {worker_id}]    Messages sent before error: {messages_sent}")
+                print(f"[Producer Worker {worker_id}]    Total errors so far: {errors}")
                 sys.stdout.flush()
 
                 # Try to reconnect if connection lost
+                print(f"[Producer Worker {worker_id}] 🔄 Attempting reconnection...")
+                sys.stdout.flush()
+
                 try:
                     connections[current_channel_index].close()
                 except:
@@ -224,16 +241,27 @@ def producer_worker(worker_id, stats_queue, stop_flag):
                 # Reconnect
                 try:
                     host = RABBITMQ_HOSTS[current_channel_index % len(RABBITMQ_HOSTS)]
+                    print(f"[Producer Worker {worker_id}] Reconnecting to {host}:{RABBITMQ_PORT}...")
+                    sys.stdout.flush()
+
                     credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASSWORD)
-                    parameters = pika.ConnectionParameters(host=host, port=RABBITMQ_PORT, credentials=credentials)
+                    parameters = pika.ConnectionParameters(
+                        host=host,
+                        port=RABBITMQ_PORT,
+                        credentials=credentials,
+                        heartbeat=600,
+                        blocked_connection_timeout=300
+                    )
                     connections[current_channel_index] = pika.BlockingConnection(parameters)
                     channels[current_channel_index] = connections[current_channel_index].channel()
-                    # Re-enable publisher confirms on reconnected channel
-                    channels[current_channel_index].confirm_delivery()
-                    print(f"[Producer Worker {worker_id}] Reconnected successfully")
+                    channels[current_channel_index].queue_declare(queue=QUEUE_NAME, durable=True)
+
+                    reconnect_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+                    print(f"[Producer Worker {worker_id}] ✓ Reconnected successfully at {reconnect_time}")
                     sys.stdout.flush()
                 except Exception as reconnect_error:
-                    print(f"[Producer Worker {worker_id}] Reconnection failed: {reconnect_error}")
+                    reconnect_error_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+                    print(f"[Producer Worker {worker_id}] ❌ Reconnection FAILED at {reconnect_error_time}: {reconnect_error}")
                     sys.stdout.flush()
 
             # Rate limiting: Sleep to maintain target messages per second

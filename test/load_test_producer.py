@@ -105,6 +105,9 @@ class LoadTestProducer:
 
     def _create_connection(self, host, port):
         """Create optimized RabbitMQ connection"""
+        connection_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+        print(f"Worker {self.worker_id}: 🔌 Connecting to {host}:{port} at {connection_time}...")
+
         credentials = pika.PlainCredentials(self.username, self.password)
         parameters = pika.ConnectionParameters(
             host=host,
@@ -119,12 +122,18 @@ class LoadTestProducer:
             frame_max=1048576,
             channel_max=1000
         )
-        
+
         try:
             connection = pika.BlockingConnection(parameters)
+            success_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            print(f"Worker {self.worker_id}: ✓ Connected to {host}:{port} at {success_time}")
             return connection
         except Exception as e:
-            print(f"Worker {self.worker_id}: Failed to connect to {host}:{port} - {e}")
+            error_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            error_type = type(e).__name__
+            print(f"Worker {self.worker_id}: ❌ Connection FAILED to {host}:{port} at {error_time}")
+            print(f"Worker {self.worker_id}:    Error type: {error_type}")
+            print(f"Worker {self.worker_id}:    Error message: {e}")
             return None
 
     def _setup_connections(self):
@@ -146,8 +155,12 @@ class LoadTestProducer:
                 for j in range(self.channels_per_connection):
                     try:
                         channel = connection.channel()
-                        channel.confirm_delivery()
-                        
+
+                        # MAXIMUM THROUGHPUT MODE: Publisher confirms DISABLED
+                        # Fire-and-forget for maximum performance
+                        # mandatory=True will still raise exceptions if routing fails
+                        # (channel.confirm_delivery() is NOT called - removed for throughput)
+
                         # Declare queue with load balancing across nodes
                         channel.queue_declare(
                             queue=f"{self.queue_name}_{i}_{j}",
@@ -158,10 +171,12 @@ class LoadTestProducer:
                                 'x-overflow': 'drop-head'
                             }
                         )
-                        
+
                         self.channels.append((channel, f"{self.queue_name}_{i}_{j}"))
+                        print(f"Worker {self.worker_id}: ✓ Created channel {j+1}/{self.channels_per_connection} on connection to {host}:{port}")
                     except Exception as e:
-                        print(f"Worker {self.worker_id}: Failed to create channel: {e}")
+                        error_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+                        print(f"Worker {self.worker_id}: ❌ Failed to create channel at {error_time}: {e}")
         
         print(f"Worker {self.worker_id}: Created {connection_count} connections, {len(self.channels)} channels")
         return len(self.channels) > 0
@@ -170,10 +185,10 @@ class LoadTestProducer:
         """Publish a batch of messages"""
         channel, queue_name = channel_info
         confirmed = 0
-        
+
         try:
             for msg_data in messages:
-                success = channel.basic_publish(
+                channel.basic_publish(
                     exchange='',
                     routing_key=queue_name,
                     body=json.dumps(msg_data).encode('utf-8'),
@@ -182,15 +197,20 @@ class LoadTestProducer:
                         content_type='application/json',
                         timestamp=int(time.time())
                     ),
-                    mandatory=False
+                    mandatory=True  # Raise exception if message cannot be routed
                 )
-                
-                if success:
-                    confirmed += 1
-                    
+                confirmed += 1
+
         except Exception as e:
-            print(f"Worker {self.worker_id}: Batch publish error: {e}")
-        
+            error_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            error_type = type(e).__name__
+            print(f"Worker {self.worker_id}: ❌ Batch publish error at {error_time}")
+            print(f"Worker {self.worker_id}:    Type: {error_type}")
+            print(f"Worker {self.worker_id}:    Message: {e}")
+            print(f"Worker {self.worker_id}:    Queue: {queue_name}")
+            print(f"Worker {self.worker_id}:    Messages in batch: {len(messages)}")
+            print(f"Worker {self.worker_id}:    Confirmed before error: {confirmed}")
+
         return confirmed
 
     def _stats_reporter(self):
