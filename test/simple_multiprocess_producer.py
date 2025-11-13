@@ -139,6 +139,25 @@ def producer_worker(worker_id, stats_queue, stop_flag):
             sys.stdout.flush()
 
             connection = pika.BlockingConnection(parameters)
+
+            # Add callbacks to detect when RabbitMQ blocks/unblocks connections
+            # This happens when memory or disk limits are exceeded
+            def on_blocked(connection, reason):
+                blocked_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+                print(f"[Producer Worker {worker_id}] ⚠️  CONNECTION BLOCKED at {blocked_time}")
+                print(f"[Producer Worker {worker_id}]    Reason: {reason}")
+                print(f"[Producer Worker {worker_id}]    RabbitMQ is refusing new messages (memory/disk alarm)")
+                sys.stdout.flush()
+
+            def on_unblocked(connection):
+                unblocked_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+                print(f"[Producer Worker {worker_id}] ✓ CONNECTION UNBLOCKED at {unblocked_time}")
+                print(f"[Producer Worker {worker_id}]    RabbitMQ is accepting messages again")
+                sys.stdout.flush()
+
+            connection.add_on_connection_blocked_callback(on_blocked)
+            connection.add_on_connection_unblocked_callback(on_unblocked)
+
             channel = connection.channel()
 
             # MAXIMUM THROUGHPUT MODE: Publisher confirms DISABLED
@@ -146,9 +165,17 @@ def producer_worker(worker_id, stats_queue, stop_flag):
             # mandatory=True will still raise exceptions if routing fails
             # (channel.confirm_delivery() is NOT called - removed for throughput)
 
-            # Declare the queue (creates it if it doesn't exist)
-            # durable=True means queue survives RabbitMQ restart
-            channel.queue_declare(queue=QUEUE_NAME, durable=True)
+            # Declare QUORUM queue (distributed across 3 nodes for HA)
+            # Quorum queues write to disk first, preventing memory overflow
+            # x-quorum-initial-group-size: 3 means replicate to all 3 cluster nodes
+            channel.queue_declare(
+                queue=QUEUE_NAME,
+                durable=True,
+                arguments={
+                    'x-queue-type': 'quorum',
+                    'x-quorum-initial-group-size': 3
+                }
+            )
 
             connections.append(connection)
             channels.append(channel)
@@ -253,8 +280,30 @@ def producer_worker(worker_id, stats_queue, stop_flag):
                         blocked_connection_timeout=300
                     )
                     connections[current_channel_index] = pika.BlockingConnection(parameters)
+
+                    # Re-add blocked connection callbacks
+                    def on_blocked_reconnect(connection, reason):
+                        blocked_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+                        print(f"[Producer Worker {worker_id}] ⚠️  RECONNECTED CONNECTION BLOCKED at {blocked_time}: {reason}")
+                        sys.stdout.flush()
+
+                    def on_unblocked_reconnect(connection):
+                        unblocked_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+                        print(f"[Producer Worker {worker_id}] ✓ RECONNECTED CONNECTION UNBLOCKED at {unblocked_time}")
+                        sys.stdout.flush()
+
+                    connections[current_channel_index].add_on_connection_blocked_callback(on_blocked_reconnect)
+                    connections[current_channel_index].add_on_connection_unblocked_callback(on_unblocked_reconnect)
+
                     channels[current_channel_index] = connections[current_channel_index].channel()
-                    channels[current_channel_index].queue_declare(queue=QUEUE_NAME, durable=True)
+                    channels[current_channel_index].queue_declare(
+                        queue=QUEUE_NAME,
+                        durable=True,
+                        arguments={
+                            'x-queue-type': 'quorum',
+                            'x-quorum-initial-group-size': 3
+                        }
+                    )
 
                     reconnect_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
                     print(f"[Producer Worker {worker_id}] ✓ Reconnected successfully at {reconnect_time}")

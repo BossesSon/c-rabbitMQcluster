@@ -175,8 +175,17 @@ def consumer_worker(worker_id, stats_queue, stop_flag):
         # Higher prefetch = better throughput, but more messages at risk if consumer crashes
         channel.basic_qos(prefetch_count=PREFETCH_COUNT)
 
-        # Declare the queue (ensures it exists)
-        channel.queue_declare(queue=QUEUE_NAME, durable=True)
+        # Declare QUORUM queue (distributed across 3 nodes for HA)
+        # Must match producer's queue declaration
+        # Quorum queues write to disk first, preventing memory overflow
+        channel.queue_declare(
+            queue=QUEUE_NAME,
+            durable=True,
+            arguments={
+                'x-queue-type': 'quorum',
+                'x-quorum-initial-group-size': 3
+            }
+        )
 
         print(f"[Consumer Worker {worker_id}] Connected to RabbitMQ on {host}")
         sys.stdout.flush()
