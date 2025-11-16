@@ -71,14 +71,16 @@ def producer_worker(worker_id, stop_flag):
     channel = None
 
     try:
-        print(f"[Worker {worker_id}] Starting...")
-
         # Calculate this worker's target rate
-        worker_target_rate = MESSAGES_PER_SECOND / PRODUCER_WORKERS / CONNECTIONS_PER_WORKER
+        # Each worker creates 1 connection, total workers = PRODUCER_WORKERS * CONNECTIONS_PER_WORKER
+        TOTAL_WORKERS = PRODUCER_WORKERS * CONNECTIONS_PER_WORKER
+        worker_target_rate = MESSAGES_PER_SECOND / TOTAL_WORKERS
         delay_per_message = 1.0 / worker_target_rate if worker_target_rate > 0 else 0
 
-        print(f"[Worker {worker_id}] Target: {worker_target_rate:.1f} msg/s per connection")
-        print(f"[Worker {worker_id}] Delay: {delay_per_message:.6f}s per message")
+        # Only first worker prints startup info (reduce log spam)
+        if worker_id == 0:
+            print(f"[Producer] Starting {TOTAL_WORKERS} connections...")
+            print(f"[Producer] Target: {MESSAGES_PER_SECOND:,} msg/s total ({worker_target_rate:.0f} msg/s per connection)")
 
         # Create message payload (reuse for efficiency)
         message_body = 'X' * MESSAGE_SIZE_BYTES
@@ -87,8 +89,6 @@ def producer_worker(worker_id, stop_flag):
 
         # Round-robin host selection
         host = RABBITMQ_HOSTS[worker_id % len(RABBITMQ_HOSTS)]
-
-        print(f"[Worker {worker_id}] Connecting to {host}:{RABBITMQ_PORT}...")
 
         credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASSWORD)
         parameters = pika.ConnectionParameters(
@@ -141,15 +141,13 @@ def producer_worker(worker_id, stop_flag):
         # Declare queue (classic durable queue - simple and reliable)
         channel.queue_declare(queue=QUEUE_NAME, durable=True)
 
-        print(f"[Worker {worker_id}] ✓ Connected successfully")
-        print(f"[Worker {worker_id}] ✓ Queue '{QUEUE_NAME}' ready")
+        if worker_id == 0:
+            print(f"[Producer] Connected to RabbitMQ, queue ready")
 
         # === SEND MESSAGES ===
 
         start_time = time.time()
         last_report_time = start_time
-
-        print(f"[Worker {worker_id}] Starting message loop...\n")
 
         while not stop_flag.value:
             # Check test duration
@@ -180,19 +178,17 @@ def producer_worker(worker_id, stop_flag):
                     messages_confirmed += 1
                 else:
                     messages_rejected += 1
-                    print(f"[Worker {worker_id}] ❌ Message #{messages_sent} was REJECTED by RabbitMQ")
+                    # Only report rejections (they should be rare)
+                    if messages_rejected <= 5:  # Only show first 5 rejections
+                        print(f"[Producer {worker_id}] ⚠️  Message rejected by RabbitMQ")
 
-                # Progress reports
-                if messages_sent == 1:
-                    print(f"[Worker {worker_id}] ✓ First message sent successfully")
-
-                if messages_sent % 1000 == 0:
+                # Progress reports - only from worker 0, every 5000 messages
+                if worker_id == 0 and messages_sent % 5000 == 0:
                     current_time = time.time()
-                    elapsed_since_report = current_time - last_report_time
-                    current_rate = 1000 / elapsed_since_report if elapsed_since_report > 0 else 0
-                    print(f"[Worker {worker_id}] Milestone: {messages_sent:,} sent "
-                          f"({messages_confirmed:,} confirmed, {messages_rejected} rejected) "
-                          f"- Rate: {current_rate:.0f} msg/s")
+                    elapsed_total = current_time - start_time
+                    overall_rate = messages_sent / elapsed_total if elapsed_total > 0 else 0
+                    print(f"[Producer] Progress: {messages_sent * TOTAL_WORKERS:,} total sent "
+                          f"(~{overall_rate * TOTAL_WORKERS:.0f} msg/s)")
                     last_report_time = current_time
 
             except Exception as e:
@@ -210,21 +206,27 @@ def producer_worker(worker_id, stop_flag):
         active_time = total_time - total_blocked_time
         avg_rate = messages_confirmed / active_time if active_time > 0 else 0
 
-        print(f"\n[Worker {worker_id}] === FINAL STATISTICS ===")
-        print(f"[Worker {worker_id}] Messages sent:      {messages_sent:,}")
-        print(f"[Worker {worker_id}] Messages confirmed: {messages_confirmed:,}")
-        print(f"[Worker {worker_id}] Messages rejected:  {messages_rejected}")
-        print(f"[Worker {worker_id}] Total time:         {total_time:.1f}s")
-        print(f"[Worker {worker_id}] Blocked time:       {total_blocked_time:.1f}s ({total_blocked_time/total_time*100:.1f}%)")
-        print(f"[Worker {worker_id}] Active time:        {active_time:.1f}s")
-        print(f"[Worker {worker_id}] Average rate:       {avg_rate:.0f} msg/s")
-        print(f"[Worker {worker_id}] Blocked count:      {connection_blocked_count}")
+        # Only worker 0 prints summary
+        if worker_id == 0:
+            total_msgs_estimate = messages_sent * TOTAL_WORKERS
+            overall_rate = messages_confirmed * TOTAL_WORKERS / active_time if active_time > 0 else 0
+            print(f"\n[Producer] === SUMMARY ===")
+            print(f"[Producer] Total sent (all connections): ~{total_msgs_estimate:,}")
+            print(f"[Producer] Total confirmed: ~{messages_confirmed * TOTAL_WORKERS:,}")
+            print(f"[Producer] Average rate: {overall_rate:.0f} msg/s")
+            print(f"[Producer] Test duration: {total_time:.1f}s")
+            if total_blocked_time > 0:
+                print(f"[Producer] Blocked time: {total_blocked_time:.1f}s ({total_blocked_time/total_time*100:.0f}%)")
+            if messages_rejected > 0:
+                print(f"[Producer] Rejected: {messages_rejected}")
+            print(f"[Producer] ==================")
 
     except KeyboardInterrupt:
-        print(f"\n[Worker {worker_id}] Interrupted by user")
+        if worker_id == 0:
+            print(f"\n[Producer] Interrupted by user")
 
     except Exception as e:
-        print(f"\n[Worker {worker_id}] ❌ FATAL ERROR: {type(e).__name__}: {e}")
+        print(f"\n[Producer {worker_id}] ❌ FATAL ERROR: {type(e).__name__}: {e}")
         import traceback
         traceback.print_exc()
 
@@ -242,7 +244,9 @@ def producer_worker(worker_id, stop_flag):
             except:
                 pass
 
-        print(f"[Worker {worker_id}] Shut down cleanly")
+        # Only first and last workers print shutdown message
+        if worker_id == 0:
+            print(f"[Producer] Shutting down...")
 
 
 # ============================================================================
@@ -252,44 +256,30 @@ def producer_worker(worker_id, stop_flag):
 def main():
     """Main function - spawns worker processes and manages them."""
 
-    print("=" * 80)
-    print("SIMPLE RABBITMQ LOAD TEST PRODUCER")
-    print("=" * 80)
-    print(f"Configuration:")
-    print(f"  RabbitMQ Hosts:    {', '.join(RABBITMQ_HOSTS)}")
-    print(f"  Queue Name:        {QUEUE_NAME}")
-    print(f"  Target Rate:       {MESSAGES_PER_SECOND:,} msg/s")
-    print(f"  Message Size:      {MESSAGE_SIZE_BYTES:,} bytes ({MESSAGE_SIZE_BYTES/1024:.1f} KB)")
-    print(f"  Test Duration:     {TEST_DURATION_SECONDS}s")
-    print(f"  Worker Processes:  {PRODUCER_WORKERS}")
-    print(f"  Connections/Worker: {CONNECTIONS_PER_WORKER}")
-    print(f"  Total Connections: {PRODUCER_WORKERS * CONNECTIONS_PER_WORKER}")
-    print("=" * 80)
-    print()
-
     # Shared stop flag
     stop_flag = Value('i', 0)
 
     # Signal handler for graceful shutdown
     def signal_handler(signum, frame):
-        print("\n\n🛑 Stopping all workers (Ctrl+C detected)...\n")
+        print("\n\n[Producer] Stopping (Ctrl+C detected)...")
         stop_flag.value = 1
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
     # Spawn worker processes
+    # Total workers = PRODUCER_WORKERS * CONNECTIONS_PER_WORKER
+    # (each process creates 1 connection)
+    TOTAL_WORKERS = PRODUCER_WORKERS * CONNECTIONS_PER_WORKER
     workers = []
-    print(f"Starting {PRODUCER_WORKERS} worker processes...\n")
 
-    for worker_id in range(PRODUCER_WORKERS):
+    for worker_id in range(TOTAL_WORKERS):
         process = Process(target=producer_worker, args=(worker_id, stop_flag))
         process.start()
         workers.append(process)
-        print(f"  Worker {worker_id} started (PID: {process.pid})")
-        time.sleep(0.1)  # Stagger startup
+        time.sleep(0.05)  # Stagger startup (shorter delay with more workers)
 
-    print(f"\n✓ All workers started\n")
+    print(f"✓ {TOTAL_WORKERS} producer connections started\n")
     print(f"Test will run for {TEST_DURATION_SECONDS} seconds...")
     print("Press Ctrl+C to stop early\n")
     print("=" * 80)

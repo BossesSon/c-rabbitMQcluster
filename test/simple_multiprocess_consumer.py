@@ -38,6 +38,7 @@ QUEUE_NAME = os.getenv('TEST_QUEUE_NAME', 'simple_load_test_queue')
 # Test parameters
 TEST_DURATION_SECONDS = int(os.getenv('TEST_DURATION_SECONDS', '60'))
 CONSUMER_WORKERS = int(os.getenv('CONSUMER_WORKERS', '4'))
+CONSUMER_CONNECTIONS_PER_WORKER = int(os.getenv('CONSUMER_CONNECTIONS_PER_WORKER', '5'))
 PREFETCH_COUNT = int(os.getenv('CONSUMER_PREFETCH_COUNT', '100'))
 
 # Batch acking for better performance (ack every N messages)
@@ -71,14 +72,17 @@ def consumer_worker(worker_id, stop_flag):
     channel = None
 
     try:
-        print(f"[Consumer {worker_id}] Starting...")
+        # Calculate total workers (each creates 1 connection)
+        TOTAL_WORKERS = CONSUMER_WORKERS * CONSUMER_CONNECTIONS_PER_WORKER
+
+        # Only first worker prints startup info (reduce log spam)
+        if worker_id == 0:
+            print(f"[Consumer] Starting {TOTAL_WORKERS} connections...")
 
         # === CONNECT TO RABBITMQ ===
 
         # Round-robin host selection
         host = RABBITMQ_HOSTS[worker_id % len(RABBITMQ_HOSTS)]
-
-        print(f"[Consumer {worker_id}] Connecting to {host}:{RABBITMQ_PORT}...")
 
         credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASSWORD)
         parameters = pika.ConnectionParameters(
@@ -99,9 +103,8 @@ def consumer_worker(worker_id, stop_flag):
         # Declare queue (must match producer)
         channel.queue_declare(queue=QUEUE_NAME, durable=True)
 
-        print(f"[Consumer {worker_id}] ✓ Connected successfully")
-        print(f"[Consumer {worker_id}] ✓ Queue '{QUEUE_NAME}' ready")
-        print(f"[Consumer {worker_id}] ✓ Prefetch count: {PREFETCH_COUNT}")
+        if worker_id == 0:
+            print(f"[Consumer] Connected to RabbitMQ, prefetch: {PREFETCH_COUNT}")
 
         # === MESSAGE CALLBACK ===
 
@@ -126,18 +129,13 @@ def consumer_worker(worker_id, stop_flag):
                     messages_acked += messages_since_last_ack
                     messages_since_last_ack = 0
 
-                # Progress reports
-                if messages_received == 1:
-                    print(f"[Consumer {worker_id}] ✓ First message received")
-
-                if messages_received % 1000 == 0:
+                # Progress reports - only from worker 0, every 5000 messages
+                if worker_id == 0 and messages_received % 5000 == 0:
                     current_time = time.time()
-                    elapsed_since_report = current_time - last_report_time
-                    current_rate = 1000 / elapsed_since_report if elapsed_since_report > 0 else 0
-                    mb_received = bytes_received / 1024 / 1024
-                    print(f"[Consumer {worker_id}] Milestone: {messages_received:,} received, "
-                          f"{messages_acked:,} acked - Rate: {current_rate:.0f} msg/s - "
-                          f"Data: {mb_received:.1f} MB")
+                    elapsed_total = current_time - start_time
+                    overall_rate = messages_received / elapsed_total if elapsed_total > 0 else 0
+                    print(f"[Consumer] Progress: {messages_received * TOTAL_WORKERS:,} total received "
+                          f"(~{overall_rate * TOTAL_WORKERS:.0f} msg/s)")
                     last_report_time = current_time
 
             except Exception as e:
@@ -146,22 +144,16 @@ def consumer_worker(worker_id, stop_flag):
 
         # === START CONSUMING ===
 
-        print(f"[Consumer {worker_id}] Starting consumption...\n")
-
         channel.basic_consume(
             queue=QUEUE_NAME,
             on_message_callback=on_message,
             auto_ack=False  # Manual acks for reliability
         )
 
-        # Consume with timeout checks
-        print(f"[Consumer {worker_id}] Consuming messages for {TEST_DURATION_SECONDS} seconds...\n")
-
         while not stop_flag.value:
             # Check test duration
             elapsed = time.time() - start_time
             if elapsed >= TEST_DURATION_SECONDS:
-                print(f"[Consumer {worker_id}] Test duration reached, stopping...")
                 break
 
             # Process messages for 1 second, then check stop flag
@@ -177,9 +169,9 @@ def consumer_worker(worker_id, stop_flag):
             try:
                 channel.basic_ack(delivery_tag=last_delivery_tag, multiple=True)
                 messages_acked += messages_since_last_ack
-                print(f"[Consumer {worker_id}] ✓ Acked final {messages_since_last_ack} messages")
             except Exception as e:
-                print(f"[Consumer {worker_id}] ❌ Error acking final messages: {e}")
+                if worker_id == 0:
+                    print(f"[Consumer] ❌ Error acking final messages: {e}")
 
         # === FINAL STATISTICS ===
 
@@ -187,16 +179,24 @@ def consumer_worker(worker_id, stop_flag):
         avg_rate = messages_received / total_time if total_time > 0 else 0
         mb_received = bytes_received / 1024 / 1024
 
-        print(f"\n[Consumer {worker_id}] === FINAL STATISTICS ===")
-        print(f"[Consumer {worker_id}] Messages received: {messages_received:,}")
-        print(f"[Consumer {worker_id}] Messages acked:    {messages_acked:,}")
-        print(f"[Consumer {worker_id}] Data received:     {mb_received:.2f} MB")
-        print(f"[Consumer {worker_id}] Total time:        {total_time:.1f}s")
-        print(f"[Consumer {worker_id}] Average rate:      {avg_rate:.0f} msg/s")
-        print(f"[Consumer {worker_id}] Errors:            {errors}")
+        # Only worker 0 prints summary
+        if worker_id == 0:
+            total_msgs_estimate = messages_received * TOTAL_WORKERS
+            overall_rate = avg_rate * TOTAL_WORKERS
+            total_mb = mb_received * TOTAL_WORKERS
+            print(f"\n[Consumer] === SUMMARY ===")
+            print(f"[Consumer] Total received (all connections): ~{total_msgs_estimate:,}")
+            print(f"[Consumer] Total acked: ~{messages_acked * TOTAL_WORKERS:,}")
+            print(f"[Consumer] Average rate: {overall_rate:.0f} msg/s")
+            print(f"[Consumer] Data received: {total_mb:.1f} MB")
+            print(f"[Consumer] Test duration: {total_time:.1f}s")
+            if errors > 0:
+                print(f"[Consumer] Errors: {errors}")
+            print(f"[Consumer] ==================")
 
     except KeyboardInterrupt:
-        print(f"\n[Consumer {worker_id}] Interrupted by user")
+        if worker_id == 0:
+            print(f"\n[Consumer] Interrupted by user")
 
     except Exception as e:
         print(f"\n[Consumer {worker_id}] ❌ FATAL ERROR: {type(e).__name__}: {e}")
@@ -223,7 +223,9 @@ def consumer_worker(worker_id, stop_flag):
             except:
                 pass
 
-        print(f"[Consumer {worker_id}] Shut down cleanly")
+        # Only first worker prints shutdown message
+        if worker_id == 0:
+            print(f"[Consumer] Shutting down...")
 
 
 # ============================================================================
@@ -233,42 +235,30 @@ def consumer_worker(worker_id, stop_flag):
 def main():
     """Main function - spawns worker processes and manages them."""
 
-    print("=" * 80)
-    print("SIMPLE RABBITMQ LOAD TEST CONSUMER")
-    print("=" * 80)
-    print(f"Configuration:")
-    print(f"  RabbitMQ Hosts:    {', '.join(RABBITMQ_HOSTS)}")
-    print(f"  Queue Name:        {QUEUE_NAME}")
-    print(f"  Test Duration:     {TEST_DURATION_SECONDS}s")
-    print(f"  Worker Processes:  {CONSUMER_WORKERS}")
-    print(f"  Prefetch Count:    {PREFETCH_COUNT}")
-    print(f"  Batch Ack Size:    {BATCH_ACK_SIZE}")
-    print("=" * 80)
-    print()
-
     # Shared stop flag
     stop_flag = Value('i', 0)
 
     # Signal handler for graceful shutdown
     def signal_handler(signum, frame):
-        print("\n\n🛑 Stopping all consumers (Ctrl+C detected)...\n")
+        print("\n\n[Consumer] Stopping (Ctrl+C detected)...")
         stop_flag.value = 1
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
     # Spawn worker processes
+    # Total workers = CONSUMER_WORKERS * CONSUMER_CONNECTIONS_PER_WORKER
+    # (each process creates 1 connection)
+    TOTAL_WORKERS = CONSUMER_WORKERS * CONSUMER_CONNECTIONS_PER_WORKER
     workers = []
-    print(f"Starting {CONSUMER_WORKERS} worker processes...\n")
 
-    for worker_id in range(CONSUMER_WORKERS):
+    for worker_id in range(TOTAL_WORKERS):
         process = Process(target=consumer_worker, args=(worker_id, stop_flag))
         process.start()
         workers.append(process)
-        print(f"  Consumer {worker_id} started (PID: {process.pid})")
-        time.sleep(0.1)  # Stagger startup
+        time.sleep(0.05)  # Stagger startup (shorter delay with more workers)
 
-    print(f"\n✓ All consumers started\n")
+    print(f"\n✓ {TOTAL_WORKERS} consumer connections started\n")
     print(f"Test will run for {TEST_DURATION_SECONDS} seconds...")
     print("Press Ctrl+C to stop early\n")
     print("=" * 80)
